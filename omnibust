@@ -1,0 +1,314 @@
+#!/usr/bin/env python
+"""OmniBust cachebusting Script
+
+Scans all html, css, js, py, etc. files for urls which reference static
+resources and contain a cachebust marker.
+
+Examples:
+
+    url(/static/img/logo.png?_cb_=1234567);
+    <img src="/static/img/logo.png?_cb_=1234567)">
+    <link href="/static/css/style.css?_cb_=1234567" type="text/css">
+
+Or filename based cachebusting (requires url rewriting by your http server):
+
+    url(/static/img/logo_cb_1234567.png);
+    <img src="/static/img/logo_cb_1234567.png)">
+    <link href="/static/css/style_cb_1234567.css" type="text/css">
+
+These references are matched up with static files and the values of their
+_cb_ parameters is replaced with a hash of the contents of the referenced
+file.
+
+Usage:
+    omnibust --init
+    omnibust [--cfg=<omnibust.cfg>] [--no-act] [--no-cascade]
+                [--filename] [--querystring]
+
+Options:
+    -h --help           Display this message
+    -v --verbose        Verbose output
+    -q --quiet          No output
+
+    --cfg=<cfg_path>    Path to configuration file
+                            [default: cachebust.init]
+    --no-act            Only show (don't apply) busted references.
+                            Warning: Will not find cascading changes.
+    --no-cascade        Don't resolve cascading changes.
+                            Cascades happen for example, when an html file has
+                            a reference to a css file which in turn has a
+                            reference to an image file. If the image is
+                            modified, the reference in the css file will be
+                            busted, which in turn will cause the reference in
+                            the html file to be busted.
+    --filename          Rewrites all references so the filename contains a
+                            cachebust parameter rather than the querystring.
+    --querystring       Rewrites all references to use a _cb_ parameter as
+                            part of the querystring.
+"""
+from __future__ import print_function
+
+import os
+import sys
+import re
+import json
+import struct
+import codecs
+from zlib import crc32
+from base64 import b32encode
+from fnmatch import fnmatch
+
+PY2 = sys.version < '3'
+
+unicode = unicode if PY2 else str
+
+
+# util functions
+
+def filepaths(rootdir, ext_filter=None):
+    if isinstance(ext_filter, (unicode, bytes)):
+        _filter = lambda p: p.endswith(ext_filter)
+    elif isinstance(ext_filter, tuple):
+        _filter = lambda p: os.path.splitext(p)[1] in ext_filter
+    else:
+        _filter = ext_filter
+
+    for root, subfolders, files in os.walk(rootdir):
+        for filename in files:
+            path = os.path.abspath(os.path.join(root, filename))
+            if not _filter or _filter(path):
+                yield path
+
+
+def mk_globfilter(globs):
+    def globfilter(path):
+        for glob in globs:
+            if fnmatch(path, glob):
+                return True
+        return False
+    return globfilter
+
+
+def expand_reference(ref, expansions):
+    allrefs = set([ref])
+    for search, replacements in expansions.items():
+        if search in ref:
+            allrefs.update((ref.replace(search, r) for r in replacements))
+                
+    return allrefs
+
+
+def contenthash(content):
+    return b32encode(struct.pack("<i", crc32(content)))[:-1].lower()
+
+
+def filehash(reference, static_paths):
+    with open(filepath, 'rb') as f:
+        return contenthash(f.read())
+
+
+def _pathmap(basedirs, match_globs, ignore_globs):
+    match_filter = mk_globfilter(match_globs)
+    ignore_filter = mk_globfilter(ignore_globs)
+    path_filter = lambda p: match_filter(p) and not ignore_filter(p)
+
+    for basedir in basedirs:
+        if not os.path.exists(basedir):
+            continue
+
+        for filepath in filepaths(basedir, path_filter):
+            yield filepath, os.stat(filepath).st_mtime
+
+
+def find_content_pathmap(cfg):
+    return dict(_pathmap(cfg['content_dirs'], cfg['search_files'],
+                         cfg['ignore_paths']))
+
+
+def find_static_pathmap(cfg):
+    return dict(_pathmap(cfg['base_dir'], cfg['static_files'],
+                         cfg['ignore_paths']))
+
+
+def subpaths(path):
+    if not hasattr(subpaths, 'cache'):
+        subpaths.cache = {}
+
+    if path not in subpaths.cache:
+        parts = path.split(os.sep)
+        subparts = (parts[i:] for i in xrange(len(parts)))
+        subpaths.cache[path] = [os.sep.join(sp) for sp in subparts]
+
+    return subpaths.cache[path]
+
+
+def resolve_filepath(ref, static_paths):
+    for path in static_paths:
+        longest = ""
+        for spath in subpaths(path):
+            if spath in path and len(spath) > len(longest):
+                longest = spath
+    if longest:
+        return longest
+    return None
+
+
+def hash_reference(cfg, ref, static_paths):
+    ref = ref.replace("/", os.sep)
+
+    hashes = []
+    for ref in expand_reference(ref, cfg['multibust']):
+        filepath = resolve_filepath(ref, static_paths)
+        if filepath:
+            hashes.append(filehash(filehash))
+
+    if len(hashes) == 0:
+        return None
+
+    if len(hashes) == 1:
+        return hashes[0]
+
+    return contenthash("".join(hashes))
+
+
+FN_REF = 1
+FN_REF_RE = re.compile(
+    r"(url\([\"\']?|href=[\"\']|src=[\"\'])?"
+    "(?P<path>"
+    "(?P<prefix>[^\"\'\s]+?)"
+    "_cb_(?P<hash>[a-zA-Z0-9]{0,7})"
+    "(?P<ext>\.\w+?))"
+)
+
+QS_REF = 2
+QS_REF_RE = re.compile(
+    r"(url\([\"\']?|href=[\"\']|src=[\"\'])?"
+    "(?P<path>"
+    "(?P<ref>[^\"\'\s]+?)"
+    "\?(.+?&)?_cb_"
+    "(=(?P<hash>[a-zA-Z0-9]{0,7}))?)"
+)
+
+
+def find_references(content):
+    if "_cb_" not in content:
+        return
+
+    for lineno, line in content.splitlines():
+        if "_cb_" not in line:
+            continue
+
+        for match in FN_REF_RE.finditer(line):
+            full_ref = match.group('path')
+            fn_ref = match.group('prefix') + match.group('ext')
+            old_hash = match.group('hash')
+            yield lineno, full_ref, fn_ref, old_hash, FN_REF
+
+        for match in QS_REF_RE.finditer(line):
+            full_ref = match.group('path')
+            fn_ref = match.group('ref')
+            old_hash = match.group('hash')
+            yield lineno, full_ref, fn_ref, old_hash, QS_REF
+
+
+def update_ref(content, full_ref, ref, old_hash, new_hash,
+               old_ref_type, new_ref_type):
+    pass
+
+
+def update_references(cfg, args, filepath, static_paths):
+    to_fn = '--filename' in args
+    to_qs = '--querystring' in args
+
+    tgt_ref_type = None
+    if to_fn and not to_qs:
+        tgt_ref_type = FN_REF
+    if to_qs and not to_fn:
+        tgt_ref_type = QS_REF
+
+    with codecs.open(filepath, 'r', encoding=cfg['file_encoding']) as f:
+        orig_content = f.read()
+
+    content = orig_content
+
+    references = find_references(orig_content)
+    for lineno, full_ref, fn_ref, old_hash, old_ref_type in references:
+        if '-v' in args or '--verbose' in args:
+            fmtstr = 'found ref "{0}", line {1}, {2}'
+            print(fmtstr.format(filepath, lineno, full_ref))
+
+        new_ref_type = tgt_ref_type or old_ref_type
+        new_hash = hash_reference(cfg, fn_ref, static_paths)
+
+        if old_hash == new_hash and old_ref_type == new_ref_type:
+            continue
+
+        yield update_ref(content, full_ref, fn_ref, old_hash, new_hash,
+                         old_ref_type, new_ref_type)
+
+    if '-n' in args or '--no-act' in args:
+        return
+
+    if content == orig_content:
+        return
+
+    with codecs.open(filepath, 'w', encoding=cfg['file_encoding']) as f:
+        f.write(content)
+
+
+def omnibust(cfg, args):
+    updated_paths = set()
+    content_paths = find_content_pathmap(cfg)
+    static_paths = find_static_pathmap(cfg)
+
+    for filepath in content_paths:
+        for ref in update_references(cfg, args, filepath, static_paths):
+            pass
+
+
+COMMENT_RE = re.compile("//.*")
+
+
+DEFAULT_CFG = r"""
+{
+    "base_dir": ".",
+    "content_dirs": ["."],             // relative to base_dir
+
+    // search for cachebust references is restricted to these filetypes
+    "search_files": ["*.html", "*.jade", "*.erb", "*.haml",
+                     "*.css", "*.less", "*.sass", "*.scss",
+                     "*.js", "*.coffee", "*.py", "*.rb", "*.php"],
+    "file_encoding": "utf-8",
+
+    // search for bustable files is restricted to these filetypes
+    "static_files": ["*.js", "*.css", "*.ico", "*.png", "*.jpg", "*.jpeg"],
+
+    "ignore_paths": ["*lib/python*", "*lib64/python*"],
+
+    // Cachebust references which contain a multibust marker are expanded
+    // using each of the replacements. The cachebust hash will be unique
+    // for the combination of all static resources. Example:
+    //
+    //     <img src="/static/i18n_img_{{ lang }}.png?_ocb_=1234567">
+    //
+    // If either of /static/i18n_img_en.png or /static/i18n_img_de.png are
+    // changed, then the cachebust varible will be refreshed.
+    "multibust": {
+        "{{ lang }}": ["en", "de"]     // marker: replacements
+    }
+}
+"""
+
+
+def main(args=sys.argv):
+    if "-h" in args or "--help" in args:
+        print(__doc__)
+        return
+
+    print(args)
+    cfg = json.loads(COMMENT_RE.sub("", DEFAULT_CFG))
+    omnibust(cfg, args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

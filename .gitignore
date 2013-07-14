@@ -1,0 +1,7 @@
+*.pyc
+*.pyo
+*sublime*
+build/*
+dist/*
+*egg*
+MANIFEST
