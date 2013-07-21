@@ -1,43 +1,35 @@
 #!/usr/bin/env python
-"""OmniBust cachebusting Script
+"""OmniBust - A cachebusting script
 
-Scans your project files for static resource references and updates their
-cachebust parameters if they have any. The parameters are based on file
-modification time and content hash.
+Omnibust scans your project files for static resources, such as js, css, png
+files, and urls which reference these resources in your sourcecode (html, js,
+css, py, rb, etc.). It will rewrite any such urls so they have a unique
+cachebust parameter, which is based on the modification time and contents of
+the static resource files.
 
-Examples:
-
-    url(/static/img/logo.png?_cb_=1234567);
-    <img src="/static/img/logo.png?_cb_=1234567)">
-    <link href="/static/css/style.css?_cb_=1234567" type="text/css">
-
-Or filename based cachebusting (requires url rewriting by your http server):
-
-    url(/static/img/logo_cb_1234567.png);
-    <img src="/static/img/logo_cb_1234567.png)">
-    <link href="/static/css/style_cb_1234567.css" type="text/css">
-
-These references are matched up with static files and the values of their
-_cb_ parameters is replaced with a hash of the contents of the referenced
-file.
+Omnibust defaults to query parameter `_cb_=0123abcd` based cachbusting, but it
+can also rewrite the filenames in urls to the form  `app_cb_0123abcd.js`. See
+[Filename Based Cachbusting] for more info on why you might want to use this.
 
 Usage:
-    omnibust --init
-    omnibust [--cfg=<omnibust.cfg>] [--view-scan]
-    omnibust [--cfg=<omnibust.cfg>] [--no-act] [--no-cascade] [--force]
+    omnibust init [--cfg=<cfg_path>]
+    omnibust scan [--cfg=<cfg_path>]
+    omnibust update [--cfg=<cfg_path>] [--no-cascade] [--force]
+    omnibust rewrite [--cfg=<cfg_path>] [--no-cascade] [--force]
                 [--filename] [--querystring]
 
 Options:
     -h --help           Display this message
     -v --verbose        Verbose output
     -q --quiet          No output
+    --version           Display version number
 
-    --view-scan         View scanned directories (to find ones which may be
+    init                Scan working directory for static files and references
+                            to them, and write an initial omnibust.cfg
+    scan                View scanned directories (to find ones which may be
                             excluded and speed up the scanning process)
     --cfg=<cfg_path>    Path to configuration file
                             [default: cachebust.init]
-    --no-act            Only show (don't apply) busted references.
-                            Warning: Will not find cascading changes.
     --no-cascade        Don't resolve cascading changes.
                             Cascades happen for example, when an html file has
                             a reference to a css file which in turn has a
@@ -253,7 +245,6 @@ def update_references(cfg, args, filepath, static_paths):
     arg_verbose = '-v' in args or '--verbose' in args
     arg_quiet = '-q' in args or '--quiet' in args
     arg_force = '-f' in args or '--force' in args
-    arg_noact = '-n' in args or '--no-act' in args
 
     tgt_ref_type = None
     if to_fn and not to_qs:
@@ -315,7 +306,19 @@ def update_references(cfg, args, filepath, static_paths):
         f.write(content)
 
 
-def omnibust(cfg, args):
+def init_cmd(cfg, args):
+    pass
+
+
+def scan_cmd(cfg, args):
+    pass
+
+
+def rewrite_cmd(cfg, args):
+    pass
+
+
+def update_cmd(cfg, args):
     content_paths = find_content_paths(cfg, args)
     static_paths = list(find_static_paths(cfg, args))
 
@@ -323,7 +326,7 @@ def omnibust(cfg, args):
         update_references(cfg, args, filepath, static_paths)
 
 
-COMMENT_RE = re.compile("//.*")
+# Option/Configuration parsing
 
 
 DEFAULT_CFG = r"""
@@ -359,14 +362,68 @@ DEFAULT_CFG = r"""
 """
 
 
-def main(args=sys.argv):
-    if "-h" in args or "--help" in args:
+def clean_cfg(data):
+    return re.sub("//.*", "", data)
+
+
+CMD_MAP = {
+    'init': init_cmd,
+    'scan': scan_cmd,
+    'rewrite': rewrite_cmd,
+    'update': update_cmd,
+}
+
+
+def read_cfg(args):
+    cfg = json.loads(clean_cfg(DEFAULT_CFG))
+
+    argiter = iter(args)
+    fn = None
+    for arg in argiter:
+        if arg.startswith('--cfg'):
+            cfg_arg = arg.split("=")
+            if len(cfg_arg) == 2:
+                fn = cfg_arg[1]
+            else:
+                fn = next(argiter)
+            break
+
+    if not fn:
+        return cfg
+
+    if not os.path.exists(fn):
+        print("omnibust: %s: No such file or directory" % fn)
+        return
+
+    try:
+        with codecs.open(fn, 'r', encoding='utf-8') as f:
+            cfg.update(json.loads(clean_cfg(f.read())))
+            return cfg
+    except (ValueError, IOError) as e:
+        print("omnibust: Error parsing '%s'" % fn, e)
+
+
+def main(args=sys.argv[1:]):
+    if not args:
+        print(__doc__.split("Options:")[0].strip())
+        return
+
+    if "-h" in args or "--help" in args or not args:
         print(__doc__)
         return
 
-    print(args)
-    cfg = json.loads(COMMENT_RE.sub("", DEFAULT_CFG))
-    omnibust(cfg, args)
+    cmd = args[0] if len(args) > 0 else None
+    if cmd and cmd not in CMD_MAP:
+        print("omnibust: Invalid command: '%s' available: (%s)" % (
+            cmd, "|".join(CMD_MAP))
+        )
+        return
+
+    cfg = read_cfg(args)
+    if cfg is None:
+        return 1
+
+    return CMD_MAP[cmd](cfg, args)
 
 
 if __name__ == '__main__':
