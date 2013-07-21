@@ -7,8 +7,8 @@ python 2.6 or greater.
 Omnibust scans your project files for static resources, such as js, css, png
 files, and urls which reference these resources in your sourcecode (html, js,
 css, py, rb, etc.). It will rewrite any such urls so they have a unique
-cachebust parameter, which is based on the modification time and contents of
-the static resource files.
+cachebust parameter, which is based on the modification time and a checksum
+of the contents of the static resource files.
 
 Omnibust defaults to query parameter `_cb_=0123abcd` based cachbusting, but it
 can also rewrite the filenames in urls to the form  `app_cb_0123abcd.js`. See
@@ -70,6 +70,56 @@ Options and Configuration
 
 
 Explicitly specify files
+
+
+Dynamic URLs and Multibust
+==========================
+
+Some URLs may not be found with `omnibust init`, esp. if they are not preceded
+by something like `src=` or `url(`, and of course URLs which are dynamically
+created during runtime cannot automatically be found at all.
+
+You can help omnibust find these by manually marking them with `_cb_`. After
+this, you can run `omnibust update` will expand the marker to a full cachbust
+parameter.
+
+The `multibust` configuration option allows for a limited form of dynamic URLs.
+Omnibust will expand any URL using the configured `multibust` mapping. If a
+multibust key (typically a template variable) is found in an URL, it is 
+expanded using the corresponding associated multibust values. The search for
+static resources is then based on the expanded URLs.
+
+Given the configuration
+
+    "multibust": {"{{ language}}": ["en", "de", "fr", "jp", "es"]}
+
+And the following URL
+
+    <img src="i18n_image_{{ language }}_cb_0123abcd.png" />
+
+The following static resources may be matched for this URL
+
+    /static/i18n_image_en.png
+    /static/i18n_image_de.png
+    ...
+
+If any of these files is modified, the cachebust parameter will be updated. 
+This method is safe (in that any change to the static resource results in
+cache invalidation) and convenient (in that one url can be used to reference
+semantically similar files), but it does mean that some cached files will be
+invalidated that were still valid. If this is a problem for you, all static
+files will have to be referenced explicitly. You could for example create a
+mapping of the form
+
+    i18n_images = {
+        'en': "/static/i18n_image_en_cb_0123abcd.png",
+        'de': "/static/i18n_image_de_cb_0123abcd.png",
+        ...
+    }
+
+And reference it for example from a jinja2 template like this
+
+    <img src="{{ i18n_image[language] }}" />
 
 
 Webserver Setup
