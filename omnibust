@@ -57,11 +57,11 @@ import re
 import json
 import struct
 import codecs
-
 import zlib
 import hashlib
 import base64
 import fnmatch
+import collections
 
 PY2 = sys.version < '3'
 
@@ -142,8 +142,7 @@ def filehash(filepath, hashfunc):
 
 
 def filestat(filepath):
-    mtime = os.stat(filepath).st_mtime
-    return b32enc(mtime)
+    return b32enc(os.path.getmtime(filepath))
 
 
 def hash_files(filepaths, fn):
@@ -342,16 +341,60 @@ def update_references(cfg, args, filepath, static_paths):
 
 
 def init_cmd(cfg, args):
-    rootdir = parse_rootdir(args)
     print("init", args)
+    STATIC_FILETYPES = (
+        ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
+        ".ttf", ".woff",
+        ".js", ".css", ".swf",
+        ".mov", ".avi", ".mp4", ".webm", ".ogg",
+        ".wav", ".mp3", "ogv", "opus"
+    )
+    CODE_FILETYPES = (
+        ".htm", ".html", ".haml", ".txt", ".md",
+        ".css", ".sass", ".less",
+        ".xml", ".json", ".yaml", ".cfg", ".ini",
+        ".js", ".coffee", ".dart", ".ts",
+        ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
+    )
+    rootdir = parse_rootdir(args)
     print(rootdir)
+
+    static_files = []
+    code_files = []
+
     for p in iter_filepaths(rootdir):
-        print(p)
+        _, ext = os.path.splitext(p)
+        if ext in STATIC_FILETYPES:
+            static_files.append(p)
+            continue
+        if ext in CODE_FILETYPES:
+            code_files.append(p)
+            continue
+
+    static_dirs = collections.defaultdict(list)
+    code_dirs = collections.defaultdict(list)
+
+    for p in static_files:
+        dirname = os.path.dirname(p)
+        filename = os.path.basename(p)
+        static_dirs[dirname].append(filename)
+
+    for p in code_files:
+        dirname = os.path.dirname(p)
+        filename = os.path.basename(p)
+        code_dirs[dirname].append(filename)
+
+    for k, v in static_dirs.iteritems():
+        print(k, v)
+
+    for k, v in code_dirs.iteritems():
+        print(k, v)
 
 
 def scan_cmd(cfg, args):
-    rootdir = parse_rootdir(args)
     print("scan", args, rootdir)
+    for path in parse_rootdir(args):
+        print(path)
     pass
 
 
@@ -371,7 +414,7 @@ def update_cmd(cfg, args):
 # Option/Configuration parsing
 
 INIT_CFG = r"""
-
+{
     // Cachebust references which contain a multibust marker are expanded
     // using each of the replacements. The cachebust hash will be unique
     // for the combination of all static resources. Example:
@@ -388,6 +431,7 @@ INIT_CFG = r"""
 
     // "hash_function": "crc32",      // sha1, sha256, sha512
     // "hash_length": 10,
+}
 """
 
 
@@ -409,7 +453,7 @@ DEFAULT_CFG = r"""
     "multibust": {},
 
     "file_encoding": "utf-8",
-    "hash_function": "crc32"
+    "hash_function": "crc32",
     "hash_length": 12
 }
 """
