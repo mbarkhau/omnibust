@@ -170,14 +170,15 @@ def _find_paths(rootdir, basedirs, filter_globs, exclude_globs, print_scan):
 
 
 def find_content_paths(cfg, args):
-    return _find_paths(cfg['root_dir'], cfg['ignore_dirs'], cfg['search_dirs'],
-                       cfg['search_files'], '--view-scan' in args)
+    return _find_paths(cfg['root_dir'], cfg['ignore_dirs'],
+                       cfg['code_dirs'], cfg['code_filetypes'],
+                       has_flag(args, '--verbose'))
 
 
 def find_static_paths(cfg, args):
     return _find_paths(cfg['root_dir'], cfg['static_dirs'],
-                       cfg['ignore_dirs'], cfg['static_files'],
-                       '--view-scan' in args)
+                       cfg['ignore_dirs'], cfg['static_filetypes'],
+                       has_flag(args, '--verbose'))
 
 
 def resolve_filepath(ref, static_paths):
@@ -210,12 +211,15 @@ def resolve_reference(cfg, ref, static_paths):
             yield filepath
 
 
-REF_RE = re.compile(
-    r"(url\([\"\']?|href=[\"\']?|src=[\"\']?)"
-    "(?P<path>[^\"\'\s]+)"
+PLAIN_REF = 1
+PLAIN_REF_RE = re.compile(
+    r"(url\([\"\']?|href=[\"\']|src=[\"\'])"
+    "(?P<path>"
+    "(?P<dir>[^\"\'\)\s\?]+\/)?"
+    "(?P<filename>[^\/\"\'\)\s\?]+))"
 )
 
-FN_REF = 1
+FN_REF = 2
 FN_REF_RE = re.compile(
     r"(url\([\"\']?|href=[\"\']?|src=[\"\']?)?"
     "(?P<path>"
@@ -224,7 +228,7 @@ FN_REF_RE = re.compile(
     "(?P<ext>\.\w+?))"
 )
 
-QS_REF = 2
+QS_REF = 3
 QS_REF_RE = re.compile(
     r"(url\([\"\']?|href=[\"\']?|src=[\"\']?)?"
     "(?P<path>"
@@ -340,55 +344,127 @@ def update_references(cfg, args, filepath, static_paths):
         f.write(content)
 
 
+STATIC_FILETYPES = (
+    ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
+    ".js", ".css", ".swf",
+    ".mov", ".avi", ".mp4", ".webm", ".ogg",
+    ".wav", ".mp3", "ogv", "opus"
+)
+CODE_FILETYPES = (
+    ".htm", ".html", ".haml", ".txt", ".md",
+    ".css", ".sass", ".less",
+    ".xml", ".json", ".yaml", ".cfg", ".ini",
+    ".js", ".coffee", ".dart", ".ts",
+    ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
+)
+
+
+def closest_matching_path(codepath, refpath, match_paths):
+    if refpath.endswith("/"):
+        refpath = refpath[:-1]
+
+    length = 0
+    longest_prefix = None
+
+    for matchpath in match_paths:
+        for i in xrange(len(codepath)):
+            if len(matchpath) <= i or codepath[i] != matchpath[i]:
+                break
+
+        if i >= length:
+            length = i
+            longest_prefix = matchpath
+
+    longest_prefix = longest_prefix[:length]
+
+    length = 0
+    longest = None
+
+    for matchpath in match_paths:
+        if not matchpath.startswith(longest_prefix):
+            continue
+
+        for i in xrange(1, len(refpath)):
+            if len(matchpath) < i or refpath[-i] != matchpath[-i]:
+                break
+
+        if i >= length:
+            length = i
+            longest = matchpath
+
+    return longest
+
+
+def find_plain_refs(codefile_path, static_fn_dirs):
+    try:
+        with codecs.open(codefile_path, 'r', 'utf-8') as fp:
+            content = fp.read()
+    except:
+        return
+ 
+    for lineno, line in enumerate(content.splitlines()):
+        for match in PLAIN_REF_RE.finditer(line):
+            fn = match.group('filename')
+            refpath = match.group('path')
+            refdir = match.group('dir') or ""
+
+            if fn not in static_fn_dirs:
+                continue
+
+            static_dir = closest_matching_path(codefile_path, refdir,
+                                               static_fn_dirs[fn])
+            yield (lineno, refpath, refdir, static_dir, fn)
+
+
 def init_cmd(cfg, args):
-    print("init", args)
-    STATIC_FILETYPES = (
-        ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
-        ".ttf", ".woff",
-        ".js", ".css", ".swf",
-        ".mov", ".avi", ".mp4", ".webm", ".ogg",
-        ".wav", ".mp3", "ogv", "opus"
-    )
-    CODE_FILETYPES = (
-        ".htm", ".html", ".haml", ".txt", ".md",
-        ".css", ".sass", ".less",
-        ".xml", ".json", ".yaml", ".cfg", ".ini",
-        ".js", ".coffee", ".dart", ".ts",
-        ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
-    )
     rootdir = parse_rootdir(args)
-    print(rootdir)
 
-    static_files = []
-    code_files = []
-
+    # scan project for files we're interested in
+    static_filepaths = []
+    code_filepaths = []
     for p in iter_filepaths(rootdir):
         _, ext = os.path.splitext(p)
         if ext in STATIC_FILETYPES:
-            static_files.append(p)
-            continue
+            static_filepaths.append(p)
         if ext in CODE_FILETYPES:
-            code_files.append(p)
-            continue
+            code_filepaths.append(p)
 
-    static_dirs = collections.defaultdict(list)
-    code_dirs = collections.defaultdict(list)
-
-    for p in static_files:
-        dirname = os.path.dirname(p)
+    # init collections for ref check
+    static_fn_dirs = collections.defaultdict(set)
+    for p in static_filepaths:
         filename = os.path.basename(p)
-        static_dirs[dirname].append(filename)
-
-    for p in code_files:
         dirname = os.path.dirname(p)
-        filename = os.path.basename(p)
-        code_dirs[dirname].append(filename)
+        static_fn_dirs[filename].add(dirname)
 
-    for k, v in static_dirs.iteritems():
-        print(k, v)
+    # find codepaths with refs
+    code_dirs = collections.defaultdict(set)
+    static_dirs = collections.defaultdict(set)
+    for codefile_path in code_filepaths:
+        code_dir = os.path.dirname(codefile_path)
+        code_fn = os.path.basename(codefile_path)
+        for pr in find_plain_refs(codefile_path, static_fn_dirs):
+            lineno, refpath, refdir, static_dir, static_fn = pr
+            code_dirs[code_dir.replace(rootdir, "")].add(code_fn)
+            static_dirs[static_dir.replace(rootdir, "")].add(static_fn)
 
-    for k, v in code_dirs.iteritems():
-        print(k, v)
+    for dirname, filenames in code_dirs.iteritems():
+        print(dirname)
+        for fn in filenames:
+            print("\t", fn)
+
+    for dirname, filenames in static_dirs.iteritems():
+        print(dirname)
+        for fn in filenames:
+            print("\t", fn)
+
+    cfg_path = os.path.join(rootdir, "omnibust_cfg.json")
+    with codecs.open(cfg_path, "w", 'utf-8') as f:
+        f.write(INIT_CFG % (
+            json.dumps(code_dirs.keys(), indent=8).replace("]", "    ]"),
+            json.dumps(static_dirs.keys(), indent=8).replace("]", "    ]")
+        ))
+
+    print("omnibust: wrote {0}".format(cfg_path))
 
 
 def scan_cmd(cfg, args):
@@ -415,6 +491,25 @@ def update_cmd(cfg, args):
 
 INIT_CFG = r"""
 {
+    // relative to config this file
+    "static_dirs": %s,
+    "static_filetypes": [
+        "*.ico", "*.png", "*.gif", "*.jpg", "*.jpeg",
+        "*.js", "*.css"
+    ],
+
+    "code_dirs": %s,
+    "code_filetypes": [
+        "*.html", "*.jade", "*.erb", "*.haml",
+        "*.css", "*.less", "*.sass", "*.scss",
+        "*.js", "*.coffee",
+        "*.py", "*.rb", "*.php"
+    ]
+
+    // "file_encoding": "utf-8",
+    // "hash_function": "crc32",      // sha1, sha256, sha512
+    // "hash_length": 10,
+
     // Cachebust references which contain a multibust marker are expanded
     // using each of the replacements. The cachebust hash will be unique
     // for the combination of all static resources. Example:
@@ -423,30 +518,23 @@ INIT_CFG = r"""
     //
     // If either of /static/i18n_img_en.png or /static/i18n_img_de.png are
     // changed, then the cachebust varible will be refreshed.
+
     // "multibust": {
     //    "{{ lang }}": ["en", "de"]  // marker: replacements
     // },
-
-    // "file_encoding": "utf-8",
-
-    // "hash_function": "crc32",      // sha1, sha256, sha512
-    // "hash_length": 10,
 }
 """
 
 
 DEFAULT_CFG = r"""
 {
-    "search_dirs": ["."],             // relative to <rootdir>
+    "file_encoding": "utf-8",
+
+    "code_dirs": ["."],
     // search for cachebust references is restricted to these filetypes
-    "search_files": ["*.html", "*.jade", "*.erb", "*.haml",
-                     "*.css", "*.less", "*.sass", "*.scss",
-                     "*.js", "*.coffee", "*.py", "*.rb", "*.php"],
 
     // search for bustable files is restricted to these filetypes
     "static_dirs": ["static", "media", "assets"],
-    "static_files": ["*.ico", "*.png", "*.gif", "*.jpg", "*.jpeg",
-                     "*.js", "*.css"],
 
     "ignore_dirs": ["*/lib/*", "*/lib64/*", "*.git/*", "*.hg/*", "*.svn/*"],
 
@@ -526,8 +614,8 @@ def main(args=sys.argv[1:]):
 
     cmd = args[0] if len(args) > 0 else None
     if cmd and cmd not in CMD_MAP:
-        print("omnibust: Invalid command: '%s' available: (%s)" % (
-            cmd, "|".join(CMD_MAP))
+        print("omnibust: available commands (%s)" % (
+            "|".join(CMD_MAP))
         )
         return
 
