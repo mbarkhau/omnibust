@@ -1,18 +1,20 @@
 Omnibust - A cachebusting script
 ================================
 
-A language and framework agnostic cachbusting script. Its only dependency is
-python 2.6 or greater.
+A language and framework agnostic cachbusting script. Its only
+dependency is python 2.6 or greater.
 
-Omnibust scans your project files for static resources, such as js, css, png
-files, and urls which reference these resources in your sourcecode (html, js,
-css, py, rb, etc.). It will rewrite any such urls so they have a unique
-cachebust parameter, which is based on the modification time and a checksum
-of the contents of the static resource files.
+Omnibust scans your project files for static resources, such as js,
+css, png files, and urls which reference these resources in your
+sourcecode (html, js, css, py, rb, etc.). It will rewrite any such
+urls so they have a unique cachebust parameter, which is based on the
+modification time and a checksum of the contents of the static resource
+files.
 
-Omnibust defaults to query parameter `_cb_=0123abcd` based cachbusting, but it
-can also rewrite the filenames in urls to the form  `app_cb_0123abcd.js`. See
-[Filename Based Cachbusting] for more info on why you might want to use this.
+Omnibust defaults to query parameter `?_cb_=0123abcd` based cachbusting,
+but it can also rewrite the filenames in urls to the form
+`app_cb_0123abcd.js`. See [Filename Based Cachbusting] for more info on
+why you might want to use this.
 
 
 Installation
@@ -37,19 +39,14 @@ Check that it worked
 Usage
 =====
 
-Write omnibust.cfg and show found resources
+Show found resources and write omnibust.cfg and 
 
     $ cd your/project/directory
-    $ omninust init
-
-Show all references to static resources.
-
-    $ omnibust scan
+    $ omninust .
 
 If this doesn't find all references to static files, or doesn't find the static
-files themselves, you will have to adjust your your omnibust.cfg (see below).
-
-Please also consider opening a ticket on 
+files themselves, you will have to adjust `static_dirs` and `code_dirs` in your
+omnibust.cfg (see below). Please also consider opening a ticket on
 [https://bitbucket.org/mbarkhau/omnibust], as we would like to have the script
 work out of the box for as many projects as reasonably possible.
 
@@ -57,12 +54,13 @@ Before using rewrite, this would be a good time to commit all your outstanding
 changes. If that is done, and the scan shows your relevant resources, you can
 have omnibust add cachebust parameters.
 
-    $ omnibust rewrite
+    $ omnibust . --rewrite --no-act
+    $ omnibust . --rewrite
 
 From now on you can use the `update` subcommand. This will only rewrite
 references which already contain a `_cb_` parameter.
 
-    $ omnibust update
+    $ omnibust .
 
 
 Options and Configuration

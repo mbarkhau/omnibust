@@ -1,24 +1,32 @@
 #!/usr/bin/env python
-"""OmniBust - A cachebusting script
+"""Omnibust v0.1.0 - A cachebusting script
 
-Omnibust scans your project files for static resources, such as js, css, png
-files, and urls which reference these resources in your sourcecode (html, js,
-css, py, rb, etc.). It will rewrite any such urls so they have a unique
-cachebust parameter, which is based on the modification time and a checksum of
-the contents of the static resource files.
+Omnibust scans your project files for static resources, such as js,
+css, png files, and urls which reference these resources in your
+sourcecode (html, js, css, py, rb, etc.). It will rewrite any such
+urls so they have a unique cachebust parameter, which is based on the
+modification time and a checksum of the contents of the static resource
+files.
 
-Omnibust defaults to query parameter `_cb_=0123abcd` based cachbusting, but it
-can also rewrite the filenames in urls to the form  `app_cb_0123abcd.js`. See
-[Filename Based Cachbusting] for more info on why you might want to use this.
+Omnibust defaults to query parameter `?_cb_=0123abcd` based cachbusting,
+but it can also rewrite the filenames in urls to the form
+`app_cb_0123abcd.js`. See [Filename Based Cachbusting] for more info on
+why you might want to use this.
+
+First steps:
+
+    omnibust path/to/project --init     # scan and write omnibust.cfg
+    omnibust path/to/project --rewrite  # add cachebust to urls
+    omnibust path/to/project            # update urls with cachebust
 
 Usage:
-    omnibust init [<rootdir>] [--cfg=<cfg_path>]
-    omnibust rewrite [<rootdir>] [--cfg=<cfg_path>]
+    omnibust (--help|--version)
+    omnibust <rootdir> [--cfg=<cfg_path>]
+                [--cascade] [--no-act] [--force]
+    omnibust <rootdir> --init
+    omnibust <rootdir> --rewrite [--cfg=<cfg_path>]
                 [--cascade] [--no-act] [--force]
                 [--filename] [--querystring]
-    omnibust update [<rootdir>] [--cfg=<cfg_path>]
-                [--cascade] [--no-act] [--force]
-    omnibust scan [<rootdir>] [--cfg=<cfg_path>]
 
 Options:
     -h --help           Display this message
@@ -26,12 +34,11 @@ Options:
     -q --quiet          No output
     --version           Display version number
 
-    init                Scan working directory for static files and references
-                            to them, and write an initial omnibust.cfg
-    scan                View scanned directories (to find ones which may be
-                            excluded and speed up the scanning process)
+    -i --init
+    scan                View scanned directories (to find ones which
+                            may be excluded and speed up the scanning process)
     --cfg=<cfg_path>    Path to configuration file
-                            [default: cachebust.init]
+                            [default: omnibust.cfg]
     -n --no-act         Don't write to files, only display changes that would
                             have been made.
     -c --cascade        Resolve cascading changes to urls.
@@ -61,6 +68,7 @@ import zlib
 import hashlib
 import base64
 import fnmatch
+import itertools
 import collections
 
 PY2 = sys.version < '3'
@@ -68,31 +76,81 @@ PY2 = sys.version < '3'
 unicode = unicode if PY2 else str
 
 
+class BaseError(Exception):
+    pass
+
+
+class PathError(BaseError):
+    def __init__(self, message, path):
+        self.path = path
+        self.message = message
+
+
 # util functions
 
-def glob_matcher(globs):
+def get_version():
+    return tuple(map(int, __doc__[10:16].split(".")))
+
+
+def b32enc(val):
+    if isinstance(val, int):
+        val = struct.pack("<i", val)
+    return base64.b32encode(val)[:-1].lower()
+
+
+def filestat(filepath):
+    return b32enc(os.path.getmtime(filepath))
+
+
+def digest_data(data, digester_name='crc32'):
+    if digester_name in hashlib.algorithms:
+        hashval = hashlib.new(digester_name, data).digest()
+    else:
+        hashval = zlib.crc32(data)
+    return b32enc(hashval)
+
+
+def file_digester(digest_func):
+    def _digester(filepath):
+        with open(filepath, 'rb') as f:
+            return digest_data(f.read(), digest_func)
+    return _digester
+
+
+def digest_paths(filepaths, digest_func):
+    digests = (digest_func(path) for path in filepaths)
+    return digest_data("".join(digests))
+
+
+# file system/path traversal and filtering
+
+
+def glob_matcher(arg):
+    if hasattr(arg, '__call__'):
+        return arg
+
     def _matcher(glob):
-        return lambda path: fnmatch.fnmatch(path, glob)
+        return lambda p: fnmatch.fnmatch(p, glob)
 
-    if isinstance(globs, (tuple, list)):
-        matchers = map(_matcher, globs)
+    # arg is a sequence of glob strings
+    if isinstance(arg, (tuple, list)):
+        matchers = map(_matcher, arg)
         return lambda p: any((m(p) for m in matchers))
-    if isinstance(globs, (unicode, bytes)):
-        return _matcher(globs)
 
-    return globs
+    # arg is a single glob string
+    if isinstance(arg, (unicode, bytes)):
+        return _matcher(arg)
+
+    return arg
 
 
-def iter_filepaths(rootdir, _filter=None, _exclude=None, _print=False):
+def iter_filepaths(rootdir, _filter=None, _exclude=None):
     _filter = glob_matcher(_filter)
     _exclude = glob_matcher(_exclude)
 
     for root, subfolders, files in os.walk(rootdir):
         if _exclude and _exclude(root):
             continue
-
-        if _print:
-            print(root)
 
         for filename in files:
             path = os.path.join(root, filename)
@@ -103,90 +161,50 @@ def iter_filepaths(rootdir, _filter=None, _exclude=None, _print=False):
                 yield path
 
 
-def mk_globfilter(globs):
-    def globfilter(path):
-        for glob in globs:
-            if fnmatch.fnmatch(path, glob):
-                return True
-        return False
-    return globfilter
-
-
-def expand_reference(ref, expansions):
-    allrefs = set([ref])
-    for search, replacements in expansions.items():
-        if search in ref:
-            allrefs.update((ref.replace(search, r) for r in replacements))
-
-    return allrefs
-
-
-def b32enc(val):
-    if isinstance(val, int):
-        val = struct.pack("<i", val)
-    return base64.b32encode(val)[:-1].lower()
-
-
-def contenthash(content, hashfunc='crc32'):
-    if hashfunc in hashlib.algorithms:
-        hashval = hashlib.new(hashfunc, content).digest()
-    else:
-        hashval = zlib.crc32(content)
-
-    return b32enc(hashval)
-
-
-def filehash(filepath, hashfunc):
-    with open(filepath, 'rb') as f:
-        return contenthash(f.read(), hashfunc)
-
-
-def filestat(filepath):
-    return b32enc(os.path.getmtime(filepath))
-
-
-def hash_files(filepaths, fn):
-    if len(filepaths) == 1:
-        fhash = contenthash(fn(filepaths[0]))
-    else:
-        fhash = contenthash("".join((fn(path) for path in filepaths)))
-
-    return fhash
-
-
-def _find_paths(rootdir, basedirs, filter_globs, exclude_globs, print_scan):
-    filter_paths = mk_globfilter(filter_globs)
-    exclude_paths = mk_globfilter(exclude_globs)
-
-    for basedir in basedirs:
+def multi_iter_filepaths(rootdir, subdirs, _filter, _exclude):
+    for basedir in subdirs:
         basedir = os.path.join(rootdir, basedir)
-
-        if not os.path.exists(basedir):
-            continue
-
-        for path in iter_filepaths(basedir, filter_paths, exclude_paths,
-                                   print_scan):
+        for path in iter_filepaths(basedir, _filter, _exclude):
             yield path
 
 
-def find_content_paths(cfg, args):
-    return _find_paths(cfg['root_dir'], cfg['ignore_dirs'],
-                       cfg['code_dirs'], cfg['code_filetypes'],
-                       has_flag(args, '--verbose'))
+def unique_dirname_printer():
+    seen_dirs = set()
+
+    def _printer(path):
+        dirname = os.path.dirname(path)
+        if dirname not in seen_dirs:
+            print(dirname)
+            seen_dirs.add(dirname)
+        return path
+
+    return _printer
 
 
-def find_static_paths(cfg, args):
-    return _find_paths(cfg['root_dir'], cfg['static_dirs'],
-                       cfg['ignore_dirs'], cfg['static_filetypes'],
-                       has_flag(args, '--verbose'))
+def iter_project_paths(cfg, args, subdirs, _filter, _exclude):
+    paths = multi_iter_filepaths(cfg['root_dir'], subdirs, _filter, _exclude)
+    if get_flag(args, '--verbose'):
+        return itertools.imap(unique_dirname_printer(), paths)
+    return paths
 
 
-def resolve_filepath(ref, static_paths):
+def iter_content_paths(cfg, args):
+    return iter_project_paths(cfg, args, cfg['ignore_dirs'],
+                              cfg['code_dirs'], cfg['code_filetypes'])
+
+
+def iter_static_paths(cfg, args):
+    return iter_project_paths(cfg, args, cfg['static_dirs'],
+                              cfg['ignore_dirs'], cfg['static_filetypes'])
+
+
+def resolve_filepath(ref, paths):
+    """Find the best matching path for an url"""
     longest_spath = ""
     longest_path = None
 
     subpaths = ref.split("/")
-    for path in static_paths:
+    for path in paths:
         if not path.endswith(subpaths[-1]):
             continue
 
@@ -202,14 +220,41 @@ def resolve_filepath(ref, static_paths):
     return longest_path
 
 
-def resolve_reference(cfg, ref, static_paths):
-    ref = ref.replace("/", os.sep)
+def filter_longest(_filter, iterator):
+    length = 0
+    longest = None
 
-    for ref in expand_reference(ref, cfg['multibust']):
-        filepath = resolve_filepath(ref, static_paths)
-        if filepath:
-            yield filepath
+    for elem in iterator:
+        for i in xrange(len(elem)):
+            if not _filter(i, elem):
+                break
 
+        if i >= length:
+            length = i
+            longest = elem
+
+    return length, longest
+
+
+def closest_matching_path(codepath, refpath, paths):
+    if refpath.endswith("/"):
+        refpath = refpath[:-1]
+
+    def prefix_matcher(i, elem):
+        return i < len(codepath) and codepath[i] == elem[i]
+
+    def suffix_matcher(i, elem):
+        return i > len(refpath) and refpath[-i] == elem[-i]
+
+    length, longest = filter_longest(prefix_matcher, paths)
+
+    prefix = longest[:length]
+    prefix_paths = (p for p in paths if p.startswith(prefix))
+
+    return filter_longest(suffix_matcher, prefix_paths)
+
+
+# url/src/href reference parsing and rewriting
 
 PLAIN_REF = 1
 PLAIN_REF_RE = re.compile(
@@ -238,26 +283,79 @@ QS_REF_RE = re.compile(
 )
 
 
-def find_references(content):
-    if "_cb_" not in content:
+Ref = collections.namedtuple('Ref', "lineno, reftype")
+
+
+def mk_plain_line_parser(codefile_path, static_fn_dirs):
+    def _parser(line):
+        for match in PLAIN_REF_RE.finditer(line):
+            fn = match.group('filename')
+            refpath = match.group('path')
+            refdir = match.group('dir') or ""
+
+            if fn not in static_fn_dirs:
+                continue
+
+            static_dir = closest_matching_path(codefile_path, refdir,
+                                               static_fn_dirs[fn])
+            yield refpath, refdir, static_dir, fn, PLAIN_REF
+    return _parser
+
+
+def parse_marked_line(line):
+    if "_cb_" not in line:
         return
 
+    for match in FN_REF_RE.finditer(line):
+        full_ref = match.group('path')
+        fn_ref = match.group('prefix') + match.group('ext')
+        old_bust = match.group('bust')
+        yield full_ref, fn_ref, old_bust, FN_REF
+
+    for match in QS_REF_RE.finditer(line):
+        full_ref = match.group('path')
+        fn_ref = match.group('ref')
+        old_bust = match.group('bust')
+        yield full_ref, fn_ref, old_bust, QS_REF
+
+
+def parse_refs(line_parser, content):
     for lineno, line in enumerate(content.splitlines()):
         lineno += 1
-        if "_cb_" not in line:
-            continue
+        for match in line_parser(line):
+            yield lineno + match
 
-        for match in FN_REF_RE.finditer(line):
-            full_ref = match.group('path')
-            fn_ref = match.group('prefix') + match.group('ext')
-            old_bust = match.group('bust')
-            yield lineno, full_ref, fn_ref, old_bust, FN_REF
 
-        for match in QS_REF_RE.finditer(line):
-            full_ref = match.group('path')
-            fn_ref = match.group('ref')
-            old_bust = match.group('bust')
-            yield lineno, full_ref, fn_ref, old_bust, QS_REF
+def parse_plain_refs(content, codefile_path, static_fn_dirs):
+    line_parser = mk_plain_line_parser(codefile_path, static_fn_dirs)
+    return parse_refs(line_parser, content)
+
+
+def parse_marked_refs(content):
+    if "_cb_" in content:
+        return parse_refs(parse_marked_line, content)
+
+
+def expand_reference(ref, expansions):
+    allrefs = set([ref])
+    for search, replacements in expansions.items():
+        if search in ref:
+            allrefs.update((ref.replace(search, r) for r in replacements))
+
+    return allrefs
+
+
+def resolve_references(refs, paths):
+    for ref in refs:
+        ref = ref.replace("/", os.sep)
+        path = resolve_filepath(ref, paths)
+        if path:
+            yield path
+
+
+def resolve_reference_paths(cfg, ref, paths):
+    refs = expand_reference(ref, cfg['multibust'])
+    return resolve_references(refs)
 
 
 def update_ref(content, full_ref, ref, old_bust, new_bust,
@@ -298,14 +396,14 @@ def update_references(cfg, args, filepath, static_paths):
 
     content = orig_content
 
-    references = find_references(orig_content)
+    references = parse_marked_refs(orig_content)
     for lineno, full_ref, fn_ref, old_bust, old_ref_type in references:
         if arg_verbose:
             fmtstr = '{1}, line {2:<4}: {0}'
             print(fmtstr.format(full_ref, filepath, lineno))
 
         new_ref_type = tgt_ref_type or old_ref_type
-        paths = tuple(resolve_reference(cfg, fn_ref, static_paths))
+        paths = tuple(resolve_reference_paths(cfg, fn_ref, static_paths))
 
         if len(paths) == 0:
             if not arg_quiet:
@@ -314,14 +412,14 @@ def update_references(cfg, args, filepath, static_paths):
 
         needs_change = old_ref_type != new_ref_type or arg_force
 
-        new_stat = hash_files(paths, filestat)[:stat_len]
+        new_stat = digest_paths(paths, filestat)[:stat_len]
 
         if not needs_change and old_bust.startswith(new_stat):
             if arg_verbose:
                 print("unchanged: " + full_ref)
             continue
 
-        new_hash = hash_files(paths, filehash, hash_fun)[:hash_len]
+        new_hash = digest_paths(paths, file_digester(hash_fun))[:hash_len]
 
         if not needs_change and old_bust.endswith(new_hash):
             continue
@@ -344,85 +442,14 @@ def update_references(cfg, args, filepath, static_paths):
         f.write(content)
 
 
-STATIC_FILETYPES = (
-    ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
-    ".js", ".css", ".swf",
-    ".mov", ".avi", ".mp4", ".webm", ".ogg",
-    ".wav", ".mp3", "ogv", "opus"
-)
-CODE_FILETYPES = (
-    ".htm", ".html", ".haml", ".txt", ".md",
-    ".css", ".sass", ".less",
-    ".xml", ".json", ".yaml", ".cfg", ".ini",
-    ".js", ".coffee", ".dart", ".ts",
-    ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
-)
 
-
-def closest_matching_path(codepath, refpath, match_paths):
-    if refpath.endswith("/"):
-        refpath = refpath[:-1]
-
-    length = 0
-    longest_prefix = None
-
-    for matchpath in match_paths:
-        for i in xrange(len(codepath)):
-            if len(matchpath) <= i or codepath[i] != matchpath[i]:
-                break
-
-        if i >= length:
-            length = i
-            longest_prefix = matchpath
-
-    longest_prefix = longest_prefix[:length]
-
-    length = 0
-    longest = None
-
-    for matchpath in match_paths:
-        if not matchpath.startswith(longest_prefix):
-            continue
-
-        for i in xrange(1, len(refpath)):
-            if len(matchpath) < i or refpath[-i] != matchpath[-i]:
-                break
-
-        if i >= length:
-            length = i
-            longest = matchpath
-
-    return longest
-
-
-def find_plain_refs(codefile_path, static_fn_dirs):
-    try:
-        with codecs.open(codefile_path, 'r', 'utf-8') as fp:
-            content = fp.read()
-    except:
-        return
- 
-    for lineno, line in enumerate(content.splitlines()):
-        for match in PLAIN_REF_RE.finditer(line):
-            fn = match.group('filename')
-            refpath = match.group('path')
-            refdir = match.group('dir') or ""
-
-            if fn not in static_fn_dirs:
-                continue
-
-            static_dir = closest_matching_path(codefile_path, refdir,
-                                               static_fn_dirs[fn])
-            yield (lineno, refpath, refdir, static_dir, fn)
-
-
-def init_cmd(cfg, args):
+def init_project(args):
     rootdir = parse_rootdir(args)
 
     # scan project for files we're interested in
     static_filepaths = []
     code_filepaths = []
-    for p in iter_filepaths(rootdir):
+    for p in iter_filepaths(rootdir, _exclude=INIT_EXCLUDE_GLOBS):
         _, ext = os.path.splitext(p)
         if ext in STATIC_FILETYPES:
             static_filepaths.append(p)
@@ -442,7 +469,13 @@ def init_cmd(cfg, args):
     for codefile_path in code_filepaths:
         code_dir = os.path.dirname(codefile_path)
         code_fn = os.path.basename(codefile_path)
-        for pr in find_plain_refs(codefile_path, static_fn_dirs):
+        try:
+            with codecs.open(codefile_path, 'r', 'utf-8') as fp:
+                content = fp.read()
+        except:
+            continue
+
+        for pr in parse_plain_refs(content, codefile_path, static_fn_dirs):
             lineno, refpath, refdir, static_dir, static_fn = pr
             code_dirs[code_dir.replace(rootdir, "")].add(code_fn)
             static_dirs[static_dir.replace(rootdir, "")].add(static_fn)
@@ -457,7 +490,7 @@ def init_cmd(cfg, args):
         for fn in filenames:
             print("\t", fn)
 
-    cfg_path = os.path.join(rootdir, "omnibust_cfg.json")
+    cfg_path = os.path.join(rootdir, "omnibust.cfg")
     with codecs.open(cfg_path, "w", 'utf-8') as f:
         f.write(INIT_CFG % (
             json.dumps(code_dirs.keys(), indent=8).replace("]", "    ]"),
@@ -468,7 +501,6 @@ def init_cmd(cfg, args):
 
 
 def scan_cmd(cfg, args):
-    print("scan", args, rootdir)
     for path in parse_rootdir(args):
         print(path)
     pass
@@ -480,31 +512,39 @@ def rewrite_cmd(cfg, args):
 
 
 def update_cmd(cfg, args):
-    content_paths = find_content_paths(cfg, args)
-    static_paths = list(find_static_paths(cfg, args))
+    content_paths = iter_content_paths(cfg, args)
+    static_paths = list(iter_static_paths(cfg, args))
 
     for filepath in content_paths:
         update_references(cfg, args, filepath, static_paths)
 
+# configuration
 
-# Option/Configuration parsing
+STATIC_FILETYPES = (
+    ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
+    ".js", ".css", ".swf",
+    ".mov", ".avi", ".mp4", ".webm", ".ogg",
+    ".wav", ".mp3", "ogv", "opus"
+)
+CODE_FILETYPES = (
+    ".htm", ".html", ".jade", ".erb", ".haml", ".txt", ".md",
+    ".css", ".sass", ".less", ".scss",
+    ".xml", ".json", ".yaml", ".cfg", ".ini",
+    ".js", ".coffee", ".dart", ".ts",
+    ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
+)
+INIT_EXCLUDE_GLOBS = (
+    "*lib/python*",
+)
 
 INIT_CFG = r"""
 {
-    // relative to config this file
+    // paths are relative to the project directory
     "static_dirs": %s,
-    "static_filetypes": [
-        "*.ico", "*.png", "*.gif", "*.jpg", "*.jpeg",
-        "*.js", "*.css"
-    ],
+    "static_filetypes": %s,
 
     "code_dirs": %s,
-    "code_filetypes": [
-        "*.html", "*.jade", "*.erb", "*.haml",
-        "*.css", "*.less", "*.sass", "*.scss",
-        "*.js", "*.coffee",
-        "*.py", "*.rb", "*.php"
-    ]
+    "code_filetypes": %s
 
     // "file_encoding": "utf-8",
     // "hash_function": "crc32",      // sha1, sha256, sha512
@@ -547,8 +587,24 @@ DEFAULT_CFG = r"""
 """
 
 
-def clean_cfg(data):
+def strip_comments(data):
     return re.sub("//.*", "", data)
+
+
+def read_cfg(args):
+    cfg = json.loads(strip_comments(DEFAULT_CFG))
+    cfg_path = parse_cfg_path(args)
+
+    try:
+        with codecs.open(cfg_path, 'r', encoding='utf-8') as f:
+            cfg.update(json.loads(strip_comments(f.read())))
+    except (ValueError, IOError) as e:
+        raise BaseError("Error parsing '%s', %s" % (cfg_path, e))
+
+    return cfg
+
+
+# option parsing
 
 
 def parse_rootdir(args):
@@ -559,71 +615,94 @@ def parse_rootdir(args):
     return "."
 
 
-def has_flag(args, flag):
+def get_flag(args, flag):
     return flag in args or flag[1:3] in args
 
 
-CMD_MAP = {
-    'init': init_cmd,
-    'scan': scan_cmd,
-    'rewrite': rewrite_cmd,
-    'update': update_cmd,
-}
+def get_opt(args, opt, default='__sentinel__'):
+    for i, arg in enumerate(args):
+        if not arg.startswith(opt):
+            continue
+
+        if "=" in arg:
+            return arg.split("=")[1]
+
+        if i + 1 < len(args):
+            return args[i + 1]
+
+        raise KeyError(opt)
+
+    if default is not '__sentinel__':
+        return default
+
+    raise KeyError(opt)
 
 
-def read_cfg(args):
-    cfg = json.loads(clean_cfg(DEFAULT_CFG))
+def parse_project_path(args):
+    path = args[0]
+    if not os.path.exists(path):
+        raise PathError("No such directory", path)
 
-    argiter = iter(args)
-    fn = None
-    for arg in argiter:
-        if arg.startswith('--cfg'):
-            cfg_arg = arg.split("=")
-            if len(cfg_arg) == 2:
-                fn = cfg_arg[1]
-            else:
-                fn = next(argiter)
-            break
+    if not os.path.isdir(path):
+        raise PathError("Not a directory", path)
 
-    if fn and not os.path.exists(fn):
-        print("omnibust: %s: No such file or directory" % fn)
-        return
-
-    if fn:
-        try:
-            with codecs.open(fn, 'r', encoding='utf-8') as f:
-                cfg.update(json.loads(clean_cfg(f.read())))
-        except (ValueError, IOError) as e:
-            print("omnibust: Error parsing '%s'" % fn, e)
-            return
-
-    if 'file_encoding' not in cfg:
-        cfg['file_encoding'] = sys.getfilesystemencoding()
-
-    return cfg
+    return path
 
 
-def main(args=sys.argv[1:]):
-    if not args:
-        print(__doc__.split("Options:")[0].strip())
-        return
+def parse_cfg_path(args):
+    path = parse_project_path(args)
+    cfg_path = get_opt(args, '--cfg', "omnibust.cfg")
 
-    if "-h" in args or "--help" in args or not args:
-        print(__doc__)
-        return
+    if not os.path.exists(cfg_path):
+        cfg_path = os.path.join(path, cfg_path)
 
-    cmd = args[0] if len(args) > 0 else None
-    if cmd and cmd not in CMD_MAP:
-        print("omnibust: available commands (%s)" % (
-            "|".join(CMD_MAP))
-        )
-        return
+    if not os.path.exists(cfg_path):
+        msg = "No such file\nDid you mean '%s --init' ?"
+        raise PathError(msg % " ".join(sys.argv), cfg_path)
+
+    return cfg_path
+
+
+# top level program
+
+
+def dispatch(args):
+    path = parse_project_path(args)
+    if get_flag(args, '--init'):
+        return init_project(path)
 
     cfg = read_cfg(args)
     if cfg is None:
         return 1
 
-    return CMD_MAP[cmd](cfg, args)
+
+def main(args=sys.argv[1:]):
+    """Print help/version info if requested, otherwise do the do run run. """
+    if not args:
+        title = __doc__.splitlines()[0]
+        usage = __doc__.split("Options:")[0].strip().split("Usage:")[1]
+        print(title + "\n\nUsage:" + usage)
+        return
+
+    if "--version" in args:
+        print(__doc__.split(" -")[0])
+        return
+
+    if get_flag(args, "--help"):
+        print(__doc__)
+        return
+
+    try:
+        return dispatch(args)
+    except PathError as e:
+        print("omnibust: invalid path '%s': %s" % (e.path, e.message))
+        return 1
+    except BaseError as e:
+        print("omnibust: " + e.message)
+        return 1
+    except Exception as e:
+        print("omnibust: " + str(e))
+        raise e
 
 
 if __name__ == '__main__':
