@@ -74,6 +74,7 @@ import collections
 PY2 = sys.version < '3'
 
 unicode = unicode if PY2 else str
+str = None
 
 
 class BaseError(Exception):
@@ -93,9 +94,11 @@ def get_version():
 
 
 def b32enc(val):
+    if isinstance(val, float):
+        val = struct.pack("<d", val)
     if isinstance(val, int):
         val = struct.pack("<i", val)
-    return base64.b32encode(val)[:-1].lower()
+    return base64.b32encode(val).replace("=", "").lower()
 
 
 def filestat(filepath):
@@ -144,27 +147,32 @@ def glob_matcher(arg):
     return arg
 
 
-def iter_filepaths(rootdir, _filter=None, _exclude=None):
-    _filter = glob_matcher(_filter)
-    _exclude = glob_matcher(_exclude)
+def iter_filepaths(rootdir, file_filter=None, file_exclude=None,
+                   dir_filter=None, dir_exclude=None):
+    file_filter = glob_matcher(file_filter)
+    file_exclude = glob_matcher(file_exclude)
+    dir_filter = glob_matcher(dir_filter)
+    dir_exclude = glob_matcher(dir_exclude)
 
     for root, subfolders, files in os.walk(rootdir):
-        if _exclude and _exclude(root):
+        if dir_exclude and dir_exclude(root):
+            continue
+
+        if dir_filter and not dir_filter(root):
             continue
 
         for filename in files:
             path = os.path.join(root, filename)
-            if _exclude and _exclude(root):
+            if file_exclude and file_exclude(path):
                 continue
 
-            if not _filter or _filter(path):
+            if not file_filter or file_filter(path):
                 yield path
 
 
-def multi_iter_filepaths(rootdir, subdirs, _filter, _exclude):
-    for basedir in subdirs:
-        basedir = os.path.join(rootdir, basedir)
-        for path in iter_filepaths(basedir, _filter, _exclude):
+def multi_iter_filepaths(rootdirs, *args, **kwargs):
+    for basedir in rootdirs:
+        for path in iter_filepaths(basedir, *args, **kwargs):
             yield path
 
 
@@ -181,24 +189,78 @@ def unique_dirname_printer():
     return _printer
 
 
-def iter_project_paths(cfg, args, subdirs, _filter, _exclude):
-    paths = multi_iter_filepaths(cfg['root_dir'], subdirs, _filter, _exclude)
+# project dir scanning
+
+def iter_project_paths(cfg, args, subdirs, file_filter, dir_exclude):
+    subdirs = [os.path.join(cfg['root_dir'], subdir) for subdir in subdirs]
+    paths = multi_iter_filepaths(subdirs, file_filter, dir_exclude)
     if get_flag(args, '--verbose'):
         return itertools.imap(unique_dirname_printer(), paths)
     return paths
 
 
 def iter_content_paths(cfg, args):
-    return iter_project_paths(cfg, args, cfg['ignore_dirs'],
-                              cfg['code_dirs'], cfg['code_filetypes'])
+    return iter_project_paths(cfg, args, cfg['code_dirs'],
+                              cfg['code_filetypes'], cfg['ignore_dirs'])
 
 
 def iter_static_paths(cfg, args):
     return iter_project_paths(cfg, args, cfg['static_dirs'],
-                              cfg['ignore_dirs'], cfg['static_filetypes'])
+                              cfg['static_filetypes'], cfg['ignore_dirs'])
 
 
-def resolve_filepath(ref, paths):
+# ref -> path matching
+
+def filter_longest(_filter, iterator):
+    length = 0
+    longest = None
+
+    for elem in iterator:
+        for i in xrange(len(elem)):
+            if not _filter(i, elem):
+                break
+
+        if i > length:
+            length = i - 1
+            longest = elem
+
+    return length, longest
+
+
+def mk_fn_dir_map(filepaths):
+    res = collections.defaultdict(set)
+    for p in filepaths:
+        dirname, filename = os.path.split(p)
+        res[filename].add(dirname)
+    return res
+
+
+def closest_matching_path(codepath, refdir, dirpaths):
+    """Find the closest static directory associated with a reference"""
+    if refdir.endswith("/"):
+        refdir = refdir[:-1]
+
+    def prefix_matcher(i, elem):
+        return i < len(codepath) and codepath[i] == elem[i]
+
+    def suffix_matcher(i, elem):
+        return i < len(refdir) and refdir[-1 - i] == elem[-1 - i]
+
+    length, longest = filter_longest(prefix_matcher, dirpaths)
+    prefix = longest[:length]
+
+    prefix_paths = [p for p in dirpaths if p.startswith(prefix)]
+
+    length, longest = filter_longest(suffix_matcher, prefix_paths)
+    return longest
+
+
+def resolve_refs(codepath, ref, static_paths):
+    for ref in refs:
+        pass
+
+
+def resolve_ref(codepath, ref, paths):
     """Find the best matching path for an url"""
     longest_spath = ""
     longest_path = None
@@ -218,40 +280,6 @@ def resolve_filepath(ref, paths):
                 break
 
     return longest_path
-
-
-def filter_longest(_filter, iterator):
-    length = 0
-    longest = None
-
-    for elem in iterator:
-        for i in xrange(len(elem)):
-            if not _filter(i, elem):
-                break
-
-        if i >= length:
-            length = i
-            longest = elem
-
-    return length, longest
-
-
-def closest_matching_path(codepath, refpath, paths):
-    if refpath.endswith("/"):
-        refpath = refpath[:-1]
-
-    def prefix_matcher(i, elem):
-        return i < len(codepath) and codepath[i] == elem[i]
-
-    def suffix_matcher(i, elem):
-        return i > len(refpath) and refpath[-i] == elem[-i]
-
-    length, longest = filter_longest(prefix_matcher, paths)
-
-    prefix = longest[:length]
-    prefix_paths = (p for p in paths if p.startswith(prefix))
-
-    return filter_longest(suffix_matcher, prefix_paths)
 
 
 # url/src/href reference parsing and rewriting
@@ -283,7 +311,7 @@ QS_REF_RE = re.compile(
 )
 
 
-Ref = collections.namedtuple('Ref', "lineno, reftype")
+Ref = collections.namedtuple('Ref', "lineno, match, reftype")
 
 
 def mk_plain_line_parser(codefile_path, static_fn_dirs):
@@ -293,6 +321,7 @@ def mk_plain_line_parser(codefile_path, static_fn_dirs):
             refpath = match.group('path')
             refdir = match.group('dir') or ""
 
+            # at least the filename must match
             if fn not in static_fn_dirs:
                 continue
 
@@ -386,7 +415,7 @@ def update_references(cfg, args, filepath, static_paths):
 
     hash_fun = cfg['hash_function']
     hash_length = int(cfg['hash_length'])
-    stat_len = min(6, hash_length // 2)
+    stat_len = min(4, hash_length // 2)
     hash_len = hash_length - stat_len
 
     file_enc = cfg['file_encoding']
@@ -442,7 +471,6 @@ def update_references(cfg, args, filepath, static_paths):
         f.write(content)
 
 
-
 def init_project(args):
     rootdir = parse_rootdir(args)
 
@@ -457,18 +485,13 @@ def init_project(args):
             code_filepaths.append(p)
 
     # init collections for ref check
-    static_fn_dirs = collections.defaultdict(set)
-    for p in static_filepaths:
-        filename = os.path.basename(p)
-        dirname = os.path.dirname(p)
-        static_fn_dirs[filename].add(dirname)
+    static_fn_dirs = mk_fn_dir_map(static_filepaths)
 
     # find codepaths with refs
     code_dirs = collections.defaultdict(set)
     static_dirs = collections.defaultdict(set)
     for codefile_path in code_filepaths:
-        code_dir = os.path.dirname(codefile_path)
-        code_fn = os.path.basename(codefile_path)
+        code_dir, code_fn = os.path.split(codefile_path)
         try:
             with codecs.open(codefile_path, 'r', 'utf-8') as fp:
                 content = fp.read()
@@ -534,7 +557,7 @@ CODE_FILETYPES = (
     ".py", ".rb", ".php", ".java", ".pl", ".cs", ".lua"
 )
 INIT_EXCLUDE_GLOBS = (
-    "*lib/python*",
+    "*lib/*", "*lib64/*", ".git/*", ".hg/*", ".svn/*",
 )
 
 INIT_CFG = r"""
@@ -546,9 +569,11 @@ INIT_CFG = r"""
     "code_dirs": %s,
     "code_filetypes": %s
 
+    // "ignore_dirs": ["*lib/*", "*lib64/*"],
+
     // "file_encoding": "utf-8",
     // "hash_function": "crc32",      // sha1, sha256, sha512
-    // "hash_length": 10,
+    // "hash_length": 6,
 
     // Cachebust references which contain a multibust marker are expanded
     // using each of the replacements. The cachebust hash will be unique
@@ -570,19 +595,13 @@ DEFAULT_CFG = r"""
 {
     "file_encoding": "utf-8",
 
-    "code_dirs": ["."],
-    // search for cachebust references is restricted to these filetypes
-
-    // search for bustable files is restricted to these filetypes
-    "static_dirs": ["static", "media", "assets"],
-
-    "ignore_dirs": ["*/lib/*", "*/lib64/*", "*.git/*", "*.hg/*", "*.svn/*"],
+    "ignore_dirs": ["*lib/*", "*lib64/*", "*.git/*", "*.hg/*", "*.svn/*"],
 
     "multibust": {},
 
     "file_encoding": "utf-8",
     "hash_function": "crc32",
-    "hash_length": 12
+    "hash_length": 6
 }
 """
 
