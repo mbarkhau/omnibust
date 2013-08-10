@@ -75,6 +75,7 @@ PY2 = sys.version < '3'
 
 unicode = unicode if PY2 else str
 str = None
+range = xrange if PY2 else range
 
 
 class BaseError(Exception):
@@ -216,7 +217,7 @@ def filter_longest(_filter, iterator):
     longest = None
 
     for elem in iterator:
-        for i in xrange(len(elem)):
+        for i in range(len(elem)):
             if not _filter(i, elem):
                 break
 
@@ -256,8 +257,7 @@ def closest_matching_path(codepath, refdir, dirpaths):
 
 
 def resolve_refs(codepath, ref, static_paths):
-    for ref in refs:
-        pass
+    pass
 
 
 def resolve_ref(codepath, ref, paths):
@@ -270,7 +270,7 @@ def resolve_ref(codepath, ref, paths):
         if not path.endswith(subpaths[-1]):
             continue
 
-        for i in xrange(1, len(subpaths) + 1):
+        for i in range(1, len(subpaths) + 1):
             spath = os.path.sep.join(subpaths[-i:])
             if spath in path:
                 if len(spath) > len(longest_spath):
@@ -311,7 +311,61 @@ QS_REF_RE = re.compile(
 )
 
 
-Ref = collections.namedtuple('Ref', "lineno, match, reftype")
+Ref = collections.namedtuple(
+    'Ref', "codepath, lineno, ref_type, fullref, refpath, bustcode"
+)
+
+
+def mk_plainref(ref):
+    assert ref.ref_type in (PLAIN_REF, FN_REF, QS_REF)
+
+    if ref.ref_type == PLAIN_REF:
+        return ref.fullref
+    if ref.ref_type == FN_REF:
+        return ref.fullref.replace("_cb_" + ref.bustcode, "")
+    if ref.ref_type == QS_REF:
+        return (ref.fullref
+                .replace("?_cb_=" + ref.bustcode, "?")
+                .replace("&_cb_=" + ref.bustcode, "")
+                .replace("?&", "?"))
+
+
+def add_fn_bustcode(ref, new_bustcode):
+    rdir, rfn = os.path.split(ref.refpath)
+    basename, ext = os.path.splitext(rfn)
+    plainref = mk_plainref(ref)
+    fnref = rdir + "/" + basename + "_cb_" + new_bustcode + ext
+    return plainref.replace(ref.refpath, fnref)
+
+
+def add_qs_bustcode(ref, new_bustcode):
+    # if "?" in plainref:
+        # return plainref
+    pass
+
+
+def replace_bustcode(ref, new_bustcode):
+    if ref.ref_type == FN_REF:
+        prefix = "_cb_"
+    if ref.ref_type == QS_REF:
+        prefix = "_cb_="
+    return ref.fullref.replace(prefix + ref.bustcode, prefix + new_bustcode)
+
+
+def rewrite_ref(ref, new_bustcode, new_ref_type=None):
+    if new_ref_type is None:
+        new_ref_type = ref.ref_type
+    assert new_ref_type in (PLAIN_REF, FN_REF, QS_REF)
+
+    if ref.ref_type == new_ref_type:
+        return replace_bustcode(ref, new_bustcode)
+
+    if new_ref_type == PLAIN_REF:
+        return ref.fullref
+    if new_ref_type == FN_REF:
+        return add_fn_bustcode(ref, new_bustcode)
+    if new_ref_type == QS_REF:
+        return add_qs_bustcode(ref, new_bustcode)
 
 
 def mk_plain_line_parser(codefile_path, static_fn_dirs):
@@ -377,9 +431,9 @@ def expand_reference(ref, expansions):
 def resolve_references(refs, paths):
     for ref in refs:
         ref = ref.replace("/", os.sep)
-        path = resolve_filepath(ref, paths)
-        if path:
-            yield path
+        # path = resolve_filepath(ref, paths)
+        # if path:
+        #     yield path
 
 
 def resolve_reference_paths(cfg, ref, paths):
@@ -573,7 +627,7 @@ INIT_CFG = r"""
 
     // "file_encoding": "utf-8",
     // "hash_function": "crc32",      // sha1, sha256, sha512
-    // "hash_length": 6,
+    // "hash_length": 8,
 
     // Cachebust references which contain a multibust marker are expanded
     // using each of the replacements. The cachebust hash will be unique
@@ -601,7 +655,7 @@ DEFAULT_CFG = r"""
 
     "file_encoding": "utf-8",
     "hash_function": "crc32",
-    "hash_length": 6
+    "hash_length": 8
 }
 """
 
