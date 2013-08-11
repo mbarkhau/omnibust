@@ -32,15 +32,38 @@ def _mk_test_project():
     os.system("touch " + os.path.join(subdir_b, "b.js"))
     return root
 
+expansions = {
+    "${foo}": ["exp_a", "exp_b"],
+    "{{bar}}": ["exp_c", "exp_d", "exp_e"]
+}
 
-p_ref = ob.Ref("test.html", 123, ob.PLAIN_REF, "url('/static/app.js')",
-               "/static/app.js", None)
-qs_ref = ob.Ref("test.html", 123, ob.QS_REF,
-                "url('/static/app.js?_cb_=123456&a=b')", "/static/app.js",
-                "123456")
-fn_ref = ob.Ref("test.html", 123, ob.FN_REF,
-                "url('/static/app_cb_123456.js')", "/static/app.js",
-                "123456")
+p_ref = ob.Ref("foo/static", "test.html", 123,
+               "url('/static/app.js')",
+               "/static/app.js", "", ob.PLAIN_REF)
+qs_ref = ob.Ref("bar/static", "test.html", 123,
+                "url('/static/app.js?_cb_=123456&a=b')",
+                "/static/app.js", "123456", ob.QS_REF)
+fn_ref = ob.Ref("assets/baz", "test.html", 123,
+                "url('/static/app_cb_123456.js?foo=12&bar=34')",
+                "/static/app.js", "123456", ob.FN_REF)
+
+
+def test_flatten():
+    assert ob.flatten([(1, 2, 3), (4, 5, 6)]) == [1, 2, 3, 4, 5, 6]
+    assert ob.flatten(((1, 2, 3), (4, 5, 6))) == [1, 2, 3, 4, 5, 6]
+
+
+def test_ext():
+    assert ob.ext("foo.bar") == ".bar"
+    assert ob.ext("foo/bar.baz") == ".baz"
+    assert ob.ext("foo/bar.tar.gz") == ".gz"
+
+
+def test_extension_globs():
+    extensions = ob.extension_globs([
+        "test.foo", "test.bar", "test.baz", "testb.foo"
+    ])
+    assert sorted(extensions) == ["*.bar", "*.baz", "*.foo"]
 
 
 def test_b32enc():
@@ -148,9 +171,14 @@ def test_unique_dirname_printer():
 
 def test_filter_longest():
     elems = ["abcdefghi", "aabbccddeeffgghhii", "aabbccddeeeef"]
+
     match = lambda i, e: ord(e[i]) <= ord("e")
     length, longest = ob.filter_longest(match, elems)
     assert longest == "aabbccddeeeef"
+
+    match = lambda i, e: e[i] == "abcdefghi"[i]
+    length, longest = ob.filter_longest(match, elems)
+    assert longest[:length] == "abcdefghi"
 
 
 def test_mk_fn_dir_map():
@@ -168,38 +196,84 @@ def test_mk_fn_dir_map():
 
 def test_closest_matching_path():
     dirpaths = ["foo/static", "foo/assets", "bar/static"]
-    path = ob.closest_matching_path("foo/a.py", "/static", dirpaths)
+    path = ob.closest_matching_path("foo/abc.js", "/static", dirpaths)
     assert path == "foo/static"
+    path = ob.closest_matching_path("bar/static", "", dirpaths)
+    assert path == "bar/static"
+
+
+def test_expand_path():
+    paths = ob.expand_path("/static/foo_${foo}.png", expansions)
+    assert len(paths) == 3
+    assert "/static/foo_${foo}.png" in paths
+    assert "/static/foo_exp_a.png" in paths
+    assert "/static/foo_exp_b.png" in paths
+
+    paths = ob.expand_path("/static/bar_{{bar}}.js", expansions)
+    assert len(paths) == 4
+    assert "/static/bar_{{bar}}.js" in paths
+    assert "/static/bar_exp_c.js" in paths
+    assert "/static/bar_exp_d.js" in paths
+    assert "/static/bar_exp_e.js" in paths
+
+
+def test_resolve_refpath():
+    pass
+    #ob.resolve_refpath()
+
+
+def test_resolve_ref_paths():
+    pass
 
 
 def test_mk_plainref():
     assert ob.mk_plainref(p_ref) == "url('/static/app.js')"
-    assert ob.mk_plainref(fn_ref) == "url('/static/app.js')"
+    assert ob.mk_plainref(fn_ref) == "url('/static/app.js?foo=12&bar=34')"
     assert ob.mk_plainref(qs_ref) == "url('/static/app.js?a=b')"
 
 
-def test_add_fn_bustcode():
-    busted = ob.add_fn_bustcode(p_ref, "abcdef")
+def test_set_fn_bustcode():
+    busted = ob.set_fn_bustcode(p_ref, "abcdef")
     assert busted == "url('/static/app_cb_abcdef.js')"
-    busted = ob.add_fn_bustcode(fn_ref, "abcdef")
-    assert busted == "url('/static/app_cb_abcdef.js')"
-    busted = ob.add_fn_bustcode(qs_ref, "abcdef")
+    busted = ob.set_fn_bustcode(fn_ref, "abcdef")
+    assert busted == "url('/static/app_cb_abcdef.js?foo=12&bar=34')"
+    busted = ob.set_fn_bustcode(qs_ref, "abcdef")
     assert busted == "url('/static/app_cb_abcdef.js?a=b')"
 
 
-def test_add_qs_bustcode():
-    assert False
+def test_set_qs_bustcode():
+    busted = ob.set_qs_bustcode(p_ref, "abcdef")
+    assert busted == "url('/static/app.js?_cb_=abcdef')"
+    busted = ob.set_qs_bustcode(fn_ref, "abcdef")
+    assert busted == "url('/static/app.js?_cb_=abcdef&foo=12&bar=34')"
+    busted = ob.set_qs_bustcode(qs_ref, "abcdef")
+    assert busted == "url('/static/app.js?_cb_=abcdef&a=b')"
 
 
 def test_replace_bustcode():
-    assert False
+    busted = ob.replace_bustcode(fn_ref, "abcdef")
+    assert busted == "url('/static/app_cb_abcdef.js?foo=12&bar=34')"
+    busted = ob.replace_bustcode(qs_ref, "abcdef")
+    assert busted == "url('/static/app.js?_cb_=abcdef&a=b')"
 
 
 def test_rewrite_ref():
     # "codepath, lineno, ref_type, fullref, refpath, bustcode"
-    print(ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF))
+    # print(ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF))
     ob.rewrite_ref(qs_ref, "abcdef", ob.QS_REF)
     ob.rewrite_ref(fn_ref, "abcdef", ob.FN_REF)
+
+
+def test_parse_rootdir():
+    assert ob.parse_project_path(["."]) == "."
+    assert ob.parse_project_path([".."]) == ".."
+    assert ob.parse_project_path(["../omnibust"]) == "../omnibust"
+    try:
+        ob.parse_project_path(["foo/bar"])
+        assert False, "should have raised path error"
+    except ob.PathError:
+        pass
+
 
 
 if __name__ == '__main__':

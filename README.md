@@ -11,8 +11,8 @@ urls so they have a unique cachebust parameter, which is based on the
 modification time and a checksum of the contents of the static resource
 files.
 
-Omnibust defaults to query parameter `?_cb_=0123abcd` based cachbusting,
-but it can also rewrite the filenames in urls to the form
+Omnibust defaults to query parameter `app.js?_cb_=0123abcd` based
+cachbusting, but it can also rewrite the filenames in urls to the form
 `app_cb_0123abcd.js`. See [Filename Based Cachbusting] for more info on
 why you might want to use this.
 
@@ -39,26 +39,33 @@ Check that it worked
 Usage
 =====
 
-Show found resources and write omnibust.cfg and 
+Project setup:
 
     $ cd your/project/directory
-    $ omninust .
+    $ omninust . --init
 
-If this doesn't find all references to static files, or doesn't find the static
-files themselves, you will have to adjust `static_dirs` and `code_dirs` in your
-omnibust.cfg (see below). Please also consider opening a ticket on
-[https://bitbucket.org/mbarkhau/omnibust], as we would like to have the script
-work out of the box for as many projects as reasonably possible.
+This will show all static urls and the static files associated with
+them and write `omnibust.cfg`.
 
-Before using rewrite, this would be a good time to commit all your outstanding
-changes. If that is done, and the scan shows your relevant resources, you can
-have omnibust add cachebust parameters.
+If this doesn't find all references to static files, or doesn't find
+the static files themselves, you will have to adjust `static_dirs` and
+`code_dirs` in your `omnibust.cfg` (see below). Please also consider
+opening a ticket on [https://bitbucket.org/mbarkhau/omnibust], as 
+omnibust should work out of the box for as many projects as reasonably
+possible.
+
+The `--rewrite` option will add a `_cb_` to every static url it can
+find and associate with a static file in the project directory.
+
+CAUTION: Since `--rewrite` will modify your source files, you should
+commit or backup your files and run omnibust with `--no-act` first to
+make certain it won't modify anything in the wrong way.
 
     $ omnibust . --rewrite --no-act
     $ omnibust . --rewrite
 
-From now on you can use the `update` subcommand. This will only rewrite
-references which already contain a `_cb_` parameter.
+From now on you simply run omnibust on your project director and it
+will only update urls which already contain a `_cb_` parameter.
 
     $ omnibust .
 
@@ -89,7 +96,7 @@ static resources is then based on the expanded URLs.
 
 Given the configuration
 
-    "multibust": {"{{ language}}": ["en", "de", "fr", "jp", "es"]}
+    "multibust": {"{{ language }}": ["en", "de", "fr", "jp", "es"]}
 
 And the following URL
 
