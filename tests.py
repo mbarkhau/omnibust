@@ -170,13 +170,13 @@ def test_unique_dirname_printer():
 
 
 def test_filter_longest():
-    elems = ["abcdefghi", "aabbccddeeffgghhii", "aabbccddeeeef"]
+    elems = ["abcdefghij", "aabbccddeeffgghhii", "aabbccddeeeef"]
 
     match = lambda i, e: ord(e[i]) <= ord("e")
     length, longest = ob.filter_longest(match, elems)
     assert longest == "aabbccddeeeef"
 
-    match = lambda i, e: e[i] == "abcdefghi"[i]
+    match = lambda i, e: i < 9 and e[i] == "abcdefghi"[i]
     length, longest = ob.filter_longest(match, elems)
     assert longest[:length] == "abcdefghi"
 
@@ -219,7 +219,7 @@ def test_expand_path():
 
 def test_resolve_refpath():
     pass
-    #ob.resolve_refpath()
+    # ob.resolve_refpath()
 
 
 def test_resolve_ref_paths():
@@ -274,6 +274,34 @@ def test_parse_rootdir():
     except ob.PathError:
         pass
 
+
+def test_strip_comments():
+    stripped = ob.strip_comments("""
+        http://foo.com/bar    // a comment
+    """).strip()
+    assert stripped == "http://foo.com/bar"
+    stripped = ob.strip_comments("""
+        foo bar baz    // a comment
+    """).strip()
+    assert stripped == "foo bar baz"
+
+
+
+def test_get_flag():
+    args = ["--foo",  "--bar", "--baz"]
+    assert ob.get_flag(args, '--foo')
+    assert not ob.get_flag(args, '--test')
+    assert not ob.get_flag([], '--foo')
+
+
+def test_get_opt():
+    assert ob.get_opt(["--baz", "--foo=bar"], '--foo') == "bar"
+    assert ob.get_opt(["--baz", "--foo", "bar"], '--foo') == "bar"
+    try:
+        ob.get_opt(["--baz", "--foo=bar"], '--baz')
+        assert False, "expected KeyError"
+    except KeyError:
+        pass
 
 
 if __name__ == '__main__':

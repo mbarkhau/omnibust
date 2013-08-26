@@ -47,19 +47,20 @@ Options:
                             cachebust parameter rather than the querystring.
 """
 from __future__ import print_function
-
-import os
-import sys
-import re
-import json
-import struct
-import codecs
-import zlib
-import hashlib
 import base64
-import fnmatch
-import itertools
+import codecs
 import collections
+import difflib
+import fnmatch
+import hashlib
+import itertools
+import json
+import os
+import re
+import struct
+import sys
+import zlib
+
 
 PY2 = sys.version < '3'
 
@@ -89,6 +90,9 @@ Ref = collections.namedtuple('Ref', (
 
 def get_version():
     return tuple(map(int, __doc__[10:16].split(".")))
+
+
+__version__ = u".".join(map(unicode, get_version()))
 
 
 def ext(path):
@@ -207,11 +211,12 @@ def unique_dirname_printer():
 
 def filter_longest(_filter, iterator):
     length = 0
-    longest = ""
+    longest = tuple()
 
     for elem in iterator:
         for i in range(len(elem)):
             if not _filter(i, elem):
+                i -= 1
                 break
         if i + 1 > length:
             length = i + 1
@@ -233,19 +238,26 @@ def closest_matching_path(code_dirpath, refdir, dirpaths):
     if refdir.endswith("/"):
         refdir = refdir[:-1]
 
+    refdir = filter(bool, refdir.split(os.sep))
+    code_dirpath = code_dirpath.split(os.sep)
+    split_dirpaths = [p.split(os.sep) for p in dirpaths]
+
     def suffix_matcher(i, elem):
         return i < len(refdir) and refdir[-1 - i] == elem[-1 - i]
 
     def prefix_matcher(i, elem):
         return i < len(code_dirpath) and code_dirpath[i] == elem[i]
 
-    length, longest = filter_longest(suffix_matcher, dirpaths)
+    length, longest = filter_longest(suffix_matcher, split_dirpaths)
     suffix = longest[-length:]
 
-    suffix_paths = [p for p in dirpaths if p.endswith(suffix)]
+    if len(suffix) == 0:
+        suffix_paths = split_dirpaths
+    else:
+        suffix_paths = [p for p in split_dirpaths if p[-len(suffix):] == suffix]
 
     length, longest = filter_longest(prefix_matcher, suffix_paths)
-    return longest
+    return os.sep.join(longest)
 
 
 def expand_path(path, expansions):
@@ -458,7 +470,7 @@ def parse_marked_refs(content):
 
 def iter_project_paths(args, cfg, subdirs, file_filter, dir_exclude):
     rootdir = parse_project_path(args)
-    subdirs = [os.path.join(rootdir, subdir) for subdir in subdirs]
+    subdirs = [os.path.join(rootdir, subdir[1:]) for subdir in subdirs]
     paths = multi_iter_filepaths(subdirs, file_filter=file_filter,
                                  dir_exclude=dir_exclude)
     if get_flag(args, '--verbose'):
@@ -592,13 +604,14 @@ def scan_project(rootdir, codefile_paths, static_fn_dirs):
             print(cur_codefile)
             prev_codefile = cur_codefile
 
+        fn = ref.ref_path.rsplit(u"/", 1)[-1]
         print(
-            "% 6d" % ref.lineno, ref.full_ref, "->",
-            os.path.join(static_dir, static_fn).replace(rootdir, "")
+            u"% 6d" % ref.lineno, ref.full_ref, u"->",
+            os.path.join(static_dir, fn).replace(rootdir, "")
         )
 
         code_dirs[ref.code_dir.replace(rootdir, "")].add(ref.code_fn)
-        static_dirs[static_dir.replace(rootdir, "")].add(static_fn)
+        static_dirs[static_dir.replace(rootdir, "")].add(fn)
 
     return code_dirs, static_dirs
 
@@ -647,6 +660,7 @@ def rewrite(args, cfg):
     refs = expanded_refs(cfg, refs)
 
     for ref in refs:
+        print(ref)
         static_dir = find_static_filepath(ref, static_fn_dirs)
         if not static_dir:
             continue
@@ -732,7 +746,7 @@ def dumpslist(l):
 
 
 def strip_comments(data):
-    return re.sub("[^:]//.*", "", data)
+    return re.sub("(^|\s)//.*", "", data)
 
 
 def read_cfg(args):
@@ -767,7 +781,9 @@ def get_opt(args, opt, default='__sentinel__'):
             return arg.split("=")[1]
 
         if i + 1 < len(args):
-            return args[i + 1]
+            arg = args[i + 1]
+            if not arg.startswith("--"):
+                return args[i + 1]
 
         raise KeyError(opt)
 
