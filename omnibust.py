@@ -46,27 +46,28 @@ Options:
     --filename          Rewrites all references so the filename contains a
                             cachebust parameter rather than the querystring.
 """
+# python 2/3 compat
 from __future__ import print_function
-import base64
-import codecs
-import collections
-import difflib
-import fnmatch
-import hashlib
-import itertools
-import json
+import sys
+
+PY2 = sys.version_info[0] == 2
+
+if PY2:
+    from itertools import imap as map
+    range = xrange
+else:
+    unicode = str
+
 import os
 import re
-import struct
-import sys
+import json
 import zlib
-
-
-PY2 = sys.version < '3'
-
-unicode = unicode if PY2 else str
-str = None
-range = xrange if PY2 else range
+import struct
+import base64
+import hashlib
+import codecs
+import collections
+import fnmatch
 
 
 class BaseError(Exception):
@@ -144,7 +145,6 @@ def digest_paths(filepaths, digest_func):
 
 # file system/path traversal and filtering
 
-
 def glob_matcher(arg):
     if hasattr(arg, '__call__'):
         return arg
@@ -162,36 +162,6 @@ def glob_matcher(arg):
         return _matcher(arg)
 
     return arg
-
-
-def iter_filepaths(rootdir, file_filter=None, file_exclude=None,
-                   dir_filter=None, dir_exclude=None):
-    file_filter = glob_matcher(file_filter)
-    file_exclude = glob_matcher(file_exclude)
-    dir_filter = glob_matcher(dir_filter)
-    dir_exclude = glob_matcher(dir_exclude)
-
-    for root, subfolders, files in os.walk(rootdir):
-        if dir_exclude and dir_exclude(root):
-            continue
-
-        if dir_filter and not dir_filter(root):
-            continue
-
-        for filename in files:
-            path = os.path.join(root, filename)
-
-            if file_exclude and file_exclude(path):
-                continue
-
-            if not file_filter or file_filter(path):
-                yield path
-
-
-def multi_iter_filepaths(rootdirs, *args, **kwargs):
-    for basedir in rootdirs:
-        for path in iter_filepaths(basedir, *args, **kwargs):
-            yield path
 
 
 def unique_dirname_printer():
@@ -235,6 +205,9 @@ def mk_fn_dir_map(filepaths):
 
 def closest_matching_path(code_dirpath, refdir, dirpaths):
     """Find the closest static directory associated with a reference"""
+    if len(dirpaths) == 1:
+        return dirpaths[0]
+
     if refdir.endswith("/"):
         refdir = refdir[:-1]
 
@@ -255,9 +228,23 @@ def closest_matching_path(code_dirpath, refdir, dirpaths):
         suffix_paths = split_dirpaths
     else:
         suffix_paths = [p for p in split_dirpaths if p[-len(suffix):] == suffix]
-
-    length, longest = filter_longest(prefix_matcher, suffix_paths)
+    
+    if len(suffix_paths) > 1:
+        length, longest = filter_longest(prefix_matcher, suffix_paths)
+    else:
+        longest = suffix_paths[0]
     return os.sep.join(longest)
+
+
+def find_static_filepath(ref, static_fn_dirs):
+    dirname, filename = os.path.split(ref.ref_path)
+    if filename not in static_fn_dirs:
+        # at least the filename must match
+        return
+
+    static_dir = closest_matching_path(ref.code_dir, dirname,
+                                       static_fn_dirs[filename])
+    return static_dir
 
 
 def expand_path(path, expansions):
@@ -269,55 +256,22 @@ def expand_path(path, expansions):
     return allpaths
 
 
-def expanded_refs(cfg, refs):
-    expansions = cfg.get('expansions', None)
+def expand_ref(ref, expansions):
     if not expansions:
-        for ref in refs:
-            yield ref
+        yield ref
         return
 
+    for expanded_path in expand_path(ref.ref_path, expansions):
+        yield ref._replace(
+            ref_path=expanded_path,
+            full_ref=ref.full_ref.replace(ref.ref_path, expanded_path)
+        )
+
+
+def expanded_refs(refs, expansions):
     for ref in refs:
-        for expanded_path in expand_path(ref.ref_path, expansions):
-            yield ref._replace(ref.ref_path, expanded_path)
-
-
-def resolve_refpath(codepath, path, static_paths):
-    """Find the best matching path for an url"""
-    longest_spath = ""
-    longest_path = None
-
-    subpaths = ref.split("/")
-    for path in static_paths:
-        if not path.endswith(subpaths[-1]):
-            continue
-
-        for i in range(1, len(subpaths) + 1):
-            spath = os.path.sep.join(subpaths[-i:])
-            if spath in path:
-                if len(spath) > len(longest_spath):
-                    longest_spath = spath
-                    longest_path = path
-            else:
-                break
-
-    return longest_path
-
-
-def resolve_ref_paths(ref, static_paths, expansions):
-    pass
-
-
-def resolve_references(refs, paths):
-    for ref in refs:
-        ref = ref.replace("/", os.sep)
-        # path = resolve_filepath(ref, paths)
-        # if path:
-        #     yield path
-
-
-def resolve_reference_paths(cfg, ref, paths):
-    refs = expand_reference(ref, cfg['multibust'])
-    return resolve_references(refs)
+        for r in expand_ref(ref, expansions):
+            yield r 
 
 
 # url/src/href reference parsing and rewriting
@@ -336,7 +290,7 @@ FN_REF_RE = re.compile(
     r"(url\([\"\']?|href=[\"\']?|src=[\"\']?)?"
     "(?P<prefix>[^\"\']+?)"
     "_cb_(?P<bust>[a-zA-Z0-9]{0,16})"
-    "(?P<ext>\.\w+?)"
+    "(?P<ext>\.\w+)"
     "[\?=&\w]*[\"\'\)]*"
 )
 
@@ -403,19 +357,14 @@ def rewrite_ref(ref, new_bustcode, new_ref_type=None):
         return set_qs_bustcode(ref, new_bustcode)
 
 
-def update_content(content, refs, hashfunc, new_ref_type=None):
-    pass
-
-
 # codefile parsing
 
 def plainref_line_parser(line):
     for match in PLAIN_REF_RE.finditer(line):
         full_ref = match.group()
         ref_path = match.group('path')
-        refdir = match.group('dir') or ""
 
-        yield full_ref, ref_path, refdir, PLAIN_REF
+        yield full_ref, ref_path, "", PLAIN_REF
 
 
 def markedref_line_parser(line):
@@ -439,19 +388,104 @@ def parse_refs(line_parser, content):
     for lineno, line in enumerate(content.splitlines()):
         for match in line_parser(line):
             fullref = match[0]
-            if "data:image/" in fullref and "base64" in fullref:
+            if "data:image/" in fullref:
                 continue
-            yield (lineno + 1,) + match
+            yield Ref(*("", "", lineno + 1,) + match)
 
 
-def parse_plain_refs(content):
-    return parse_refs(plainref_line_parser, content)
-
-
-def parse_marked_refs(content):
+def parse_all_refs(content):
+    all_refs = list(parse_refs(plainref_line_parser, content))
     if "_cb_" in content:
-        return parse_refs(markedref_line_parser, content)
-    return tuple()
+        all_refs.extend(parse_refs(markedref_line_parser, content))
+    
+    return sorted(all_refs, key=lambda r: (r.lineno))
+
+
+# project dir scanning
+
+def iter_filepaths(rootdir, file_filter=None, file_exclude=None,
+                   dir_filter=None, dir_exclude=None):
+    file_filter = glob_matcher(file_filter)
+    file_exclude = glob_matcher(file_exclude)
+    dir_filter = glob_matcher(dir_filter)
+    dir_exclude = glob_matcher(dir_exclude)
+
+    for root, _, files in os.walk(rootdir):
+        if dir_exclude and dir_exclude(root):
+            continue
+
+        if dir_filter and not dir_filter(root):
+            continue
+
+        for filename in files:
+            path = os.path.join(root, filename)
+
+            if file_exclude and file_exclude(path):
+                continue
+
+            if not file_filter or file_filter(path):
+                yield path
+
+
+def multi_iter_filepaths(rootdirs, *args, **kwargs):
+    for basedir in rootdirs:
+        for path in iter_filepaths(basedir, *args, **kwargs):
+            yield path
+
+
+def iter_project_paths(args, cfg, subdirs, file_filter, dir_exclude):
+    rootdir = parse_project_path(args)
+    subdirs = (os.path.join(rootdir, subdir[1:]) for subdir in subdirs)
+    paths = multi_iter_filepaths(subdirs, file_filter=file_filter,
+                                 dir_exclude=dir_exclude)
+    if get_flag(args, '--verbose'):
+        return map(unique_dirname_printer(), paths)
+    return paths
+
+
+def iter_content_paths(args, cfg):
+    return iter_project_paths(args, cfg, cfg['code_dirs'],
+                              cfg['code_filetypes'], cfg['ignore_dirs'])
+
+
+def iter_static_paths(args, cfg):
+    return iter_project_paths(args, cfg, cfg['static_dirs'],
+                              cfg['static_filetypes'], cfg['ignore_dirs'])
+
+# def resolve_refpath(codepath, path, static_paths):
+#     """Find the best matching path for an url"""
+#     longest_spath = ""
+#     longest_path = None
+# 
+#     subpaths = ref.split("/")
+#     for path in static_paths:
+#         if not path.endswith(subpaths[-1]):
+#             continue
+# 
+#         for i in range(1, len(subpaths) + 1):
+#             spath = os.path.sep.join(subpaths[-i:])
+#             if spath in path:
+#                 if len(spath) > len(longest_spath):
+#                     longest_spath = spath
+#                     longest_path = path
+#             else:
+#                 break
+# 
+#     return longest_path
+# 
+# 
+# def resolve_references(refs, paths):
+#     for ref in refs:
+#         ref = ref.replace("/", os.sep)
+#         # path = resolve_filepath(ref, paths)
+#         # if path:
+#         #     yield path
+# 
+# 
+# def resolve_reference_paths(cfg, ref, paths):
+#     refs = expand_ref(ref, cfg['multibust'])
+#     return resolve_references(refs)
+
 
 
 # def update_ref(content, full_ref, ref, old_bust, new_bust,
@@ -464,28 +498,6 @@ def parse_marked_refs(content):
 #         #       reconstruct new query params
 #         raise NotImplemented("changing ref types")
 #     return content.replace(full_ref, new_full_ref)
-
-
-# project dir scanning
-
-def iter_project_paths(args, cfg, subdirs, file_filter, dir_exclude):
-    rootdir = parse_project_path(args)
-    subdirs = [os.path.join(rootdir, subdir[1:]) for subdir in subdirs]
-    paths = multi_iter_filepaths(subdirs, file_filter=file_filter,
-                                 dir_exclude=dir_exclude)
-    if get_flag(args, '--verbose'):
-        return itertools.imap(unique_dirname_printer(), paths)
-    return paths
-
-
-def iter_content_paths(args, cfg):
-    return iter_project_paths(args, cfg, cfg['code_dirs'],
-                              cfg['code_filetypes'], cfg['ignore_dirs'])
-
-
-def iter_static_paths(args, cfg):
-    return iter_project_paths(args, cfg, cfg['static_dirs'],
-                              cfg['static_filetypes'], cfg['ignore_dirs'])
 
 
 # def update_references(args, cfg, filepath, static_paths):
@@ -568,23 +580,9 @@ def iter_project_refs(codefile_paths):
                 content = fp.read()
         except:
             continue
-
-        for ref in parse_plain_refs(content):
-            yield Ref(*((code_dir, code_fn) + ref))
-
-        for ref in parse_marked_refs(content):
-            yield Ref(*((code_dir, code_fn) + ref))
-
-
-def find_static_filepath(ref, static_fn_dirs):
-    # at least the filename must match
-    dirname, filename = os.path.split(ref.ref_path)
-    if filename not in static_fn_dirs:
-        return
-
-    static_dir = closest_matching_path(ref.code_dir, dirname,
-                                       static_fn_dirs[filename])
-    return static_dir
+        
+        for ref in parse_all_refs(content):
+            yield ref._replace(code_dir=code_dir, code_fn=code_fn)
 
 
 def scan_project(rootdir, codefile_paths, static_fn_dirs):
@@ -656,11 +654,12 @@ def rewrite(args, cfg):
     static_filepaths = list(iter_static_paths(args, cfg))
     static_fn_dirs = mk_fn_dir_map(static_filepaths)
 
-    refs = iter_project_refs(iter_content_paths(args, cfg))
-    refs = expanded_refs(cfg, refs)
+    codefile_paths = iter_content_paths(args, cfg)
+    refs = iter_project_refs(codefile_paths)
+    expansions = cfg.get('expansions', None)
+    refs = expanded_refs(refs, expansions)
 
     for ref in refs:
-        print(ref)
         static_dir = find_static_filepath(ref, static_fn_dirs)
         if not static_dir:
             continue

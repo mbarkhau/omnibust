@@ -1,7 +1,6 @@
 from __future__ import print_function
 
 import os
-import time
 import tempfile
 import omnibust as ob
 
@@ -82,9 +81,9 @@ def test_filestat():
 
     assert ob.filestat(path) == ob.filestat(path)
     stat = ob.filestat(path)
-    time.sleep(.1)
     os.system("touch " + path)
     assert stat != ob.filestat(path)
+    assert ob.filestat(path) == ob.filestat(path)
 
 
 def test_digest_data():
@@ -174,7 +173,7 @@ def test_filter_longest():
 
     match = lambda i, e: ord(e[i]) <= ord("e")
     length, longest = ob.filter_longest(match, elems)
-    assert longest == "aabbccddeeeef"
+    assert longest[:length] == "aabbccddeeee"
 
     match = lambda i, e: i < 9 and e[i] == "abcdefghi"[i]
     length, longest = ob.filter_longest(match, elems)
@@ -202,6 +201,25 @@ def test_closest_matching_path():
     assert path == "bar/static"
 
 
+def test_find_static_filepath():
+    static_fn_dirs = ob.mk_fn_dir_map([
+        "foo/assets/app.js",
+        "bar/static/js/app.js",
+        "bar/static/lib/app.js",
+    ])
+
+    ref = ob.Ref("bar", "test.html", 123,
+                 "url('/static/js/app.js')",
+                 "/static/js/app.js", "", ob.PLAIN_REF)
+    assert "bar/static/js" == ob.find_static_filepath(ref, static_fn_dirs)
+    ref = ref._replace(code_dir="foo")
+    assert "bar/static/js" == ob.find_static_filepath(ref, static_fn_dirs)
+    ref = ref._replace(ref_path="/lib/app.js")
+    assert "bar/static/lib" == ob.find_static_filepath(ref, static_fn_dirs)
+    ref = ref._replace(ref_path="/app.js")
+    assert "foo/assets" == ob.find_static_filepath(ref, static_fn_dirs)
+
+
 def test_expand_path():
     paths = ob.expand_path("/static/foo_${foo}.png", expansions)
     assert len(paths) == 3
@@ -217,13 +235,34 @@ def test_expand_path():
     assert "/static/bar_exp_e.js" in paths
 
 
-def test_resolve_refpath():
-    pass
-    # ob.resolve_refpath()
+def test_expand_ref():
+    ref = ob.Ref("foo/static", "test.html", 123,
+                 "url('/static/app_${foo}.js')",
+                 "/static/app_${foo}.js", "", ob.PLAIN_REF)
+    expanded_refs = list(ob.expand_ref(ref, expansions))
+    expanded_paths = set(r.ref_path for r in expanded_refs)
+    assert len(expanded_paths) == 3
+    assert "/static/app_${foo}.js" in expanded_paths
+    assert "/static/app_exp_a.js" in expanded_paths
+    assert "/static/app_exp_b.js" in expanded_paths
+
+    expanded_full_refs = set(r.full_ref for r in expanded_refs)
+    assert len(expanded_full_refs) == 3
+    assert "url('/static/app_${foo}.js')" in expanded_full_refs
+    assert "url('/static/app_exp_a.js')" in expanded_full_refs
+    assert "url('/static/app_exp_b.js')" in expanded_full_refs
 
 
-def test_resolve_ref_paths():
-    pass
+def test_expanded_refs():
+    ref = ob.Ref("foo/static", "test.html", 123,
+                 "url('/static/app_${foo}.js')",
+                 "/static/app_${foo}.js", "", ob.PLAIN_REF)
+    expanded_refs = list(ob.expanded_refs([ref], expansions))
+    expanded_paths = set(r.ref_path for r in expanded_refs)
+    assert len(expanded_paths) == 3
+    assert "/static/app_${foo}.js" in expanded_paths
+    assert "/static/app_exp_a.js" in expanded_paths
+    assert "/static/app_exp_b.js" in expanded_paths
 
 
 def test_mk_plainref():
@@ -259,12 +298,65 @@ def test_replace_bustcode():
 
 def test_rewrite_ref():
     # "codepath, lineno, ref_type, fullref, refpath, bustcode"
-    # print(ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF))
-    ob.rewrite_ref(qs_ref, "abcdef", ob.QS_REF)
-    ob.rewrite_ref(fn_ref, "abcdef", ob.FN_REF)
+    rewritten = ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF)
+    assert rewritten == "url('/static/app.js?_cb_=abcdef')"
+    rewritten = ob.rewrite_ref(qs_ref, "abcdef", ob.QS_REF)
+    assert rewritten == "url('/static/app.js?_cb_=abcdef&a=b')"
+    rewritten = ob.rewrite_ref(fn_ref, "abcdef", ob.FN_REF)
+    assert rewritten == "url('/static/app_cb_abcdef.js?foo=12&bar=34')"
 
 
-def test_parse_rootdir():
+def test_plainref_line_parser():
+    line = '<img src="/static/img/logo.png"/>'
+    _, ref_path, bust, ref_type = next(ob.plainref_line_parser(line))
+    assert not bust
+    assert ref_path == "/static/img/logo.png"
+    assert ref_type == ob.PLAIN_REF
+
+
+def test_markedref_line_parser():
+    line = '<img src="/static/img/logo.png"/>'
+    try:
+        next(ob.markedref_line_parser(line))
+        assert False, "should have failed with StopIteration"
+    except StopIteration:
+        pass
+    
+    line = '<img src="/static/img/logo_cb_1234.png"/>'
+    _, ref_path, bust, ref_type = next(ob.markedref_line_parser(line))
+    assert bust == "1234"
+    assert ref_path == "/static/img/logo.png"
+    assert ref_type == ob.FN_REF
+    
+    line = '<img src="/static/img/logo.png?_cb_=1234"/>'
+    _, ref_path, bust, ref_type = next(ob.markedref_line_parser(line))
+    assert bust == "1234"
+    assert ref_path == "/static/img/logo.png"
+    assert ref_type == ob.QS_REF
+
+
+def test_parse_all_refs():
+    assert len(ob.parse_all_refs("")) == 0
+
+    refs = ob.parse_all_refs("""
+        <img src="data:image/png;base64,iV==">
+        <script src="/static/js/lib.js"></script>
+        <script src="/static/js/app.js?_cb_=123"></script>
+        <script src="/static/js/app.js?foo=bar&_cb_=abc"></script>
+        <link href="/static/css/style_cb_xyz.css">
+    """)
+    assert len(refs) == 4
+    assert refs[0].ref_type == ob.PLAIN_REF
+    assert refs[1].ref_type == ob.PLAIN_REF
+    paths = set((r[2] for r in refs))
+    busts = set((r[3] for r in refs))
+    assert "123" in busts
+    assert "abc" in busts
+    assert "xyz" in busts
+
+
+
+def test_parse_project_path():
     assert ob.parse_project_path(["."]) == "."
     assert ob.parse_project_path([".."]) == ".."
     assert ob.parse_project_path(["../omnibust"]) == "../omnibust"

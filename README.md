@@ -20,10 +20,6 @@ why you might want to use this.
 Installation
 ============
 
-    $ easy_install omnibust
-
-Or
-
     $ pip install omnibust
 
 Or

@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 from os.path import join, dirname
 from omnibust import __version__
 
@@ -12,12 +12,15 @@ setup(
     name='omnibust',
     version=__version__,
     description='Cachebusting Script that works everywhere',
-    long_description=read('README.md'),
+    long_description=(
+        read('README.md') + "\n" +
+        read('LICENSE')
+    ),
     author='Manuel Barkhau',
     author_email='mbarkhau@gmail.com',
     url='http://bitbucket.org/mbarkhau/omnibust/',
     license="BSD License",
-    packages=['omnibust'],
+    packages=find_packages(),
     entry_points={'console_scripts': ['omnibust = omnibust:main']},
     keywords="cachebust web",
     classifiers=[
