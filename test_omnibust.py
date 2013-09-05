@@ -1,14 +1,30 @@
 from __future__ import print_function
 
 import os
+import sys
+import time
+import codecs
 import tempfile
 import omnibust as ob
+
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from io import StringIO
+
+PY2 = sys.version_info[0] == 2
+
+if PY2:
+    from itertools import imap as map
+    range = xrange
+else:
+    unicode = str
 
 
 def _write_tmp_file(content, path=None):
     if path is None:
         _, path = tempfile.mkstemp()
-    with open(path, 'wb') as f:
+    with codecs.open(path, 'wb', encoding="utf-8") as f:
         f.write(content)
     return path
 
@@ -66,21 +82,26 @@ def test_extension_globs():
 
 
 def test_b32enc():
-    assert len(ob.b32enc(1)) == 7
+    assert len(ob.b32enc(1)) == 13
     assert len(ob.b32enc(1.1)) == 13
-    assert len(ob.b32enc(123456)) == 7
-    assert ob.b32enc(123456) == b"idracaa"
-    assert isinstance(ob.b32enc(b"test"), bytes)
-    assert ob.b32enc(b"test") == b"orsxg5a"
+    assert len(ob.b32enc(123456)) == 13
+    assert ob.b32enc(123456) == "idracaaaaaaaa"
+    assert isinstance(ob.b32enc(b"test"), unicode)
+    assert ob.b32enc("test") == "orsxg5a"
 
 
 def test_filestat():
-    assert len(ob.filestat(__file__)) == 13
     fp, path = tempfile.mkstemp()
+
+    time.sleep(0.02)
+
     os.system("touch " + path)
 
     assert ob.filestat(path) == ob.filestat(path)
     stat = ob.filestat(path)
+
+    time.sleep(0.02)
+
     os.system("touch " + path)
     assert stat != ob.filestat(path)
     assert ob.filestat(path) == ob.filestat(path)
@@ -88,7 +109,7 @@ def test_filestat():
 
 def test_digest_data():
     digest = ob.digest_data
-    assert isinstance(digest("test"), bytes)
+    assert isinstance(digest("test"), unicode)
     assert digest("test") == digest("test")
     assert digest("foo") != digest("bar")
     assert digest("test", 'sha1') == digest("test", 'sha1')
@@ -96,12 +117,15 @@ def test_digest_data():
     assert digest("test", 'sha1') != digest("test", 'md5')
 
 
-def test_file_digester():
+def test_file_buster():
     path_a = _write_tmp_file("test")
+    time.sleep(0.02)
     path_b = _write_tmp_file("test")
 
-    crc_digester = ob.file_digester('crc32')
-    assert crc_digester(path_a) == crc_digester(path_b)
+    crc_digester = ob.file_buster('crc32', 4, 4)
+
+    assert crc_digester(path_a)[:4] == crc_digester(path_b)[:4]
+    assert crc_digester(path_a)[4:] != crc_digester(path_b)[4:]
 
     path_a = _write_tmp_file("foo")
     path_b = _write_tmp_file("bar")
@@ -109,27 +133,17 @@ def test_file_digester():
     assert crc_digester(path_a) != crc_digester(path_b)
 
 
-def test_digest_paths():
-    path_a = _write_tmp_file("test")
-    path_b = _write_tmp_file("test")
-
-    digester = ob.file_digester('crc32')
-    digest_a = ob.digest_paths([path_a, path_b], digester)
-    digest_b = ob.digest_paths([path_a, path_b], digester)
-    assert digest_a == digest_b
-    _write_tmp_file("foo", path_b)
-    digest_b = ob.digest_paths([path_a, path_b], digester)
-    assert digest_a != digest_b
-
-
 def test_glob_matcher():
-    txt_matcher = ob.glob_matcher("*.js")
-    assert txt_matcher("foo.js")
-    assert txt_matcher("foo/bar.js")
-    assert not txt_matcher("foo/bar.py")
+    js_matcher = ob.glob_matcher("*.js")
+    assert js_matcher("foo.js")
+    assert js_matcher("foo/bar.js")
+    assert not js_matcher("foo/bar.py")
     jpg_matcher = ob.glob_matcher(("*.jpg", "*.jpeg"))
     assert jpg_matcher("foo.jpg")
+    assert jpg_matcher("foo.jpg")
     assert jpg_matcher("foo/bar.jpeg")
+    assert jpg_matcher("foo/bar.jpeg")
+    assert not jpg_matcher("foo/bar.py")
     assert not jpg_matcher("foo/bar.py")
 
 
@@ -152,12 +166,10 @@ def test_multi_iter_filepaths():
 
 
 def test_unique_dirname_printer():
-    import sys
-    import cStringIO
     # just check that it's a wrapper
     printer = ob.unique_dirname_printer()
     orig_out = sys.stdout
-    tmp_out = sys.stdout = cStringIO.StringIO()
+    tmp_out = sys.stdout = StringIO()
     assert printer("test/foo") == "test/foo"
     assert printer("foo/foo") == "foo/foo"
     assert printer("bar/foo") == "bar/foo"
@@ -194,6 +206,9 @@ def test_mk_fn_dir_map():
 
 
 def test_closest_matching_path():
+    dirpaths = set(["foo/static"])
+    path = ob.closest_matching_path("bar/abc.js", "/test", dirpaths)
+    assert path == "foo/static"
     dirpaths = ["foo/static", "foo/assets", "bar/static"]
     path = ob.closest_matching_path("foo/abc.js", "/static", dirpaths)
     assert path == "foo/static"
@@ -208,17 +223,34 @@ def test_find_static_filepath():
         "bar/static/lib/app.js",
     ])
 
-    ref = ob.Ref("bar", "test.html", 123,
-                 "url('/static/js/app.js')",
-                 "/static/js/app.js", "", ob.PLAIN_REF)
-    assert "bar/static/js" == ob.find_static_filepath(ref, static_fn_dirs)
-    ref = ref._replace(code_dir="foo")
-    assert "bar/static/js" == ob.find_static_filepath(ref, static_fn_dirs)
-    ref = ref._replace(ref_path="/lib/app.js")
-    assert "bar/static/lib" == ob.find_static_filepath(ref, static_fn_dirs)
-    ref = ref._replace(ref_path="/app.js")
-    assert "foo/assets" == ob.find_static_filepath(ref, static_fn_dirs)
+    assert "bar/static/js/app.js" == ob.find_static_filepath(
+        "bar", "/static/js/app.js", static_fn_dirs)
 
+    assert "bar/static/js/app.js" == ob.find_static_filepath(
+        "foo", "/static/js/app.js", static_fn_dirs)
+
+    assert "bar/static/lib/app.js" == ob.find_static_filepath(
+        "foo", "/lib/app.js", static_fn_dirs)
+
+    assert "foo/assets/app.js" == ob.find_static_filepath(
+        "foo", "/app.js", static_fn_dirs)
+
+
+def test_find_static_filepaths():
+    static_fn_dirs = ob.mk_fn_dir_map([
+        "foo/static/img/logo_a.png",
+        "foo/static/img/logo_b.png",
+        "foo/static/img/logo_c.png",
+    ])
+    
+    ref_paths = [ "logo_a.png", "logo_b.png", "logo_c.png", "logo_d.png" ]
+    static_paths = set(ob.find_static_filepaths("foo", ref_paths,
+                                                static_fn_dirs))
+    assert len(static_paths) == 3
+    assert "foo/static/img/logo_a.png" in static_paths
+    assert "foo/static/img/logo_b.png" in static_paths
+    assert "foo/static/img/logo_c.png" in static_paths
+    
 
 def test_expand_path():
     paths = ob.expand_path("/static/foo_${foo}.png", expansions)
@@ -235,34 +267,43 @@ def test_expand_path():
     assert "/static/bar_exp_e.js" in paths
 
 
-def test_expand_ref():
+def test_ref_paths():
     ref = ob.Ref("foo/static", "test.html", 123,
                  "url('/static/app_${foo}.js')",
                  "/static/app_${foo}.js", "", ob.PLAIN_REF)
-    expanded_refs = list(ob.expand_ref(ref, expansions))
-    expanded_paths = set(r.ref_path for r in expanded_refs)
-    assert len(expanded_paths) == 3
-    assert "/static/app_${foo}.js" in expanded_paths
-    assert "/static/app_exp_a.js" in expanded_paths
-    assert "/static/app_exp_b.js" in expanded_paths
 
-    expanded_full_refs = set(r.full_ref for r in expanded_refs)
-    assert len(expanded_full_refs) == 3
-    assert "url('/static/app_${foo}.js')" in expanded_full_refs
-    assert "url('/static/app_exp_a.js')" in expanded_full_refs
-    assert "url('/static/app_exp_b.js')" in expanded_full_refs
+    static_paths = list(ob.ref_paths(ref, expansions))
+    assert len(static_paths) == 3
+    assert "/static/app_${foo}.js" in static_paths
+    assert "/static/app_exp_a.js" in static_paths
+    assert "/static/app_exp_b.js" in static_paths
 
 
-def test_expanded_refs():
-    ref = ob.Ref("foo/static", "test.html", 123,
-                 "url('/static/app_${foo}.js')",
-                 "/static/app_${foo}.js", "", ob.PLAIN_REF)
-    expanded_refs = list(ob.expanded_refs([ref], expansions))
-    expanded_paths = set(r.ref_path for r in expanded_refs)
-    assert len(expanded_paths) == 3
-    assert "/static/app_${foo}.js" in expanded_paths
-    assert "/static/app_exp_a.js" in expanded_paths
-    assert "/static/app_exp_b.js" in expanded_paths
+def test_bust_paths():
+    buster = ob.file_buster('sha1')
+    
+    path_a = _write_tmp_file("foo")
+    path_b = _write_tmp_file("bar")
+
+    bustcode_1 = ob.bust_paths([path_a, path_b], buster)
+    bustcode_2 = ob.bust_paths([path_a, path_b], buster)
+    assert bustcode_1 == bustcode_2
+    
+    time.sleep(0.02)
+
+    os.system("touch " + path_a)
+    bustcode_3 = ob.bust_paths([path_a, path_b], buster)
+    assert bustcode_1 != bustcode_3
+    
+    time.sleep(0.02)
+
+    open(path_a, 'w').write("baz")
+    bustcode_4 = ob.bust_paths([path_a, path_b], buster)
+    assert bustcode_3 != bustcode_4
+
+    bustcode_5 = ob.bust_paths([path_a], buster)
+    bustcode_6 = ob.bust_paths([path_a], buster)
+    assert bustcode_5 == bustcode_6
 
 
 def test_mk_plainref():
@@ -297,7 +338,7 @@ def test_replace_bustcode():
 
 
 def test_rewrite_ref():
-    # "codepath, lineno, ref_type, fullref, refpath, bustcode"
+    # "codepath, lineno, reftype, fullref, refpath, bustcode"
     rewritten = ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF)
     assert rewritten == "url('/static/app.js?_cb_=abcdef')"
     rewritten = ob.rewrite_ref(qs_ref, "abcdef", ob.QS_REF)
@@ -344,16 +385,25 @@ def test_parse_all_refs():
         <script src="/static/js/app.js?_cb_=123"></script>
         <script src="/static/js/app.js?foo=bar&_cb_=abc"></script>
         <link href="/static/css/style_cb_xyz.css">
+        "/assets/img/logo_cb_lmn.png"
     """)
-    assert len(refs) == 4
-    assert refs[0].ref_type == ob.PLAIN_REF
-    assert refs[1].ref_type == ob.PLAIN_REF
-    paths = set((r[2] for r in refs))
-    busts = set((r[3] for r in refs))
+    assert len(refs) == 5
+    assert refs[0].type == ob.PLAIN_REF
+    assert refs[1].type == ob.QS_REF
+    assert refs[2].type == ob.QS_REF
+    assert refs[3].type == ob.FN_REF
+    assert refs[4].type == ob.FN_REF
+
+    paths = set((r.path for r in refs))
+    assert "/static/js/lib.js" in paths
+    assert "/static/js/app.js" in paths
+    assert "/static/css/style.css" in paths
+
+    busts = set((r.bustcode for r in refs))
     assert "123" in busts
     assert "abc" in busts
+    assert "lmn" in busts
     assert "xyz" in busts
-
 
 
 def test_parse_project_path():
@@ -378,7 +428,6 @@ def test_strip_comments():
     assert stripped == "foo bar baz"
 
 
-
 def test_get_flag():
     args = ["--foo",  "--bar", "--baz"]
     assert ob.get_flag(args, '--foo')
@@ -397,9 +446,20 @@ def test_get_opt():
 
 
 if __name__ == '__main__':
-    for k, v in locals().items():
+    # quick and dirty test harness, mainly for python3 compat testing
+    fail = []
+
+    for k, v in list(locals().items()):
         if k.startswith('test_'):
             try:
                 v()
-            except:
-                pass
+                print(".", end="")
+            except Exception as ex:
+                fail.append("Failed: %s\nReason: %s %s\n" % (k, type(ex), ex))
+                print("F", end="")
+
+            sys.stdout.flush()
+
+    print("")
+    for f in fail:
+        print(f)

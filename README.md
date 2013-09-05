@@ -1,20 +1,13 @@
-Omnibust - A cachebusting script
-================================
+Omnibust - A universal cachebusting script
+==========================================
 
 A language and framework agnostic cachbusting script. Its only
-dependency is python 2.6 or greater.
+dependency is python >= 2.6 and python >= 3.2.
 
-Omnibust scans your project files for static resources, such as js,
-css, png files, and urls which reference these resources in your
-sourcecode (html, js, css, py, rb, etc.). It will rewrite any such
-urls so they have a unique cachebust parameter, which is based on the
-modification time and a checksum of the contents of the static resource
-files.
-
-Omnibust defaults to query parameter `app.js?_cb_=0123abcd` based
-cachbusting, but it can also rewrite the filenames in urls to the form
-`app_cb_0123abcd.js`. See [Filename Based Cachbusting] for more info on
-why you might want to use this.
+Omnibust will scan your project files for static resources files
+(js, css, png) and also for urls which reference these resources in your
+sourcecode (html, js, css, py, rb, etc.). It will rewrite any urls to
+successfully matched static resource with a cachebust parameter.
 
 
 Installation
@@ -71,6 +64,7 @@ Options and Configuration
 
 
 Explicitly specify files
+TODO: parameter configuration
 
 
 Dynamic URLs and Multibust
@@ -126,18 +120,20 @@ And reference it for example from a jinja2 template like this
 Webserver Setup
 ===============
 
-In order for browsers to cache and reuse your static resources, your webserver
-must set appropriate cache headers. Here are some example configuration
-directives for common webservers.
+In order for browsers to cache and reuse your static resources, your
+webserver must set appropriate cache headers. Here are some example
+configuration directives for common webservers.
 
 
 Filename Based Cachbusting
 ==========================
 
-URLs with query parameters are not cached by all browsers in all situations,
-even if all caching headers are provided correctly [needs reference]. TODO: 
-check if there are browsers where a cached resource will be used even if the
-query string changes.
+Omnibust defaults to query parameter `app.js?_cb_=0123abcd` based
+cachbusting, but it can also rewrite the filenames in urls to the form
+`app_cb_0123abcd.js`. This is useful since URLs with query parameters are not
+cached by all browsers in all situations, even if all caching headers are
+provided correctly [needs reference]. TODO: check if there are browsers where
+a cached resource will be used even if the query string changes.
 
 Putting a cachebust parameter in the filename of a URL will guarantee that your
 static resource is loaded when it has changed and it will be cached in more

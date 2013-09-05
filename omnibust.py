@@ -1,17 +1,10 @@
 #!/usr/bin/env python
-"""Omnibust v0.1.0 - A cachebusting script
+"""Omnibust v0.1.0 - A universal cachebusting script
 
-Omnibust scans your project files for static resources, such as js,
-css, png files, and urls which reference these resources in your
-sourcecode (html, js, css, py, rb, etc.). It will rewrite any such
-urls so they have a unique cachebust parameter, which is based on the
-modification time and a checksum of the contents of the static resource
-files.
-
-Omnibust defaults to query parameter `app.js?_cb_=0123abcd` based
-cachbusting, but it can also rewrite the filenames in urls to the form
-`app_cb_0123abcd.js`. See [Filename Based Cachbusting] for more info on
-why you might want to use this.
+Omnibust will scan your project files for static resources files
+(js, css, png) and also for urls which reference these resources in your
+sourcecode (html, js, css, py, rb, etc.). It will rewrite any urls to
+successfully matched static resource with a cachebust parameter.
 
 
 First steps:
@@ -23,10 +16,10 @@ First steps:
 
 Usage:
     omnibust (--help|--version)
-    omnibust <rootdir> --init [--force]
-    omnibust <rootdir> --rewrite [--cfg=<cfg_path>]
+    omnibust <project_path> --init [--force]
+    omnibust <project_path> --rewrite [--cfg=<cfg_path>]
                 [--no-act] [--force] [--filename]
-    omnibust <rootdir> [--cfg=<cfg_path>]
+    omnibust <project_path> [--cfg=<cfg_path>]
                 [--no-act] [--force]
 
 Options:
@@ -48,7 +41,18 @@ Options:
 """
 # python 2/3 compat
 from __future__ import print_function
+import base64
+import codecs
+import collections
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import struct
 import sys
+import zlib
+
 
 PY2 = sys.version_info[0] == 2
 
@@ -57,17 +61,6 @@ if PY2:
     range = xrange
 else:
     unicode = str
-
-import os
-import re
-import json
-import zlib
-import struct
-import base64
-import hashlib
-import codecs
-import collections
-import fnmatch
 
 
 class BaseError(Exception):
@@ -81,8 +74,7 @@ class PathError(BaseError):
 
 
 Ref = collections.namedtuple('Ref', (
-    "code_dir", "code_fn", "lineno",
-    "full_ref", "ref_path", "bustcode", "ref_type"
+    "code_dir", "code_fn", "lineno", "full_ref", "path", "bustcode", "type"
 ))
 
 
@@ -93,7 +85,11 @@ def get_version():
     return tuple(map(int, __doc__[10:16].split(".")))
 
 
-__version__ = u".".join(map(unicode, get_version()))
+__version__ = ".".join(map(unicode, get_version()))
+
+
+def ref_codepath(ref):
+    return os.path.join(ref.code_dir, ref.code_fn)
 
 
 def ext(path):
@@ -115,32 +111,62 @@ def b32enc(val):
     if isinstance(val, float):
         val = struct.pack("<d", val)
     if isinstance(val, int):
-        val = struct.pack("<i", val)
-    return base64.b32encode(val).replace("=", "").lower()
+        val = struct.pack("<q", val)
+    if isinstance(val, unicode):
+        val = val.encode('utf-8')
+    
+    b32val = base64.b32encode(val)
+    return b32val.decode('ascii').replace("=", "").lower()
 
 
-def filestat(filepath):
-    return b32enc(os.path.getmtime(filepath))
+def digest_data(data, digester_name='sha1'):
+    if isinstance(data, unicode):
+        data = data.encode('utf-8')
 
-
-def digest_data(data, digester_name='crc32'):
-    if digester_name in hashlib.algorithms:
+    if hasattr(hashlib, digester_name):
         hashval = hashlib.new(digester_name, data).digest()
     else:
         hashval = zlib.crc32(data)
     return b32enc(hashval)
 
 
-def file_digester(digest_func):
-    def _digester(filepath):
-        with open(filepath, 'rb') as f:
-            return digest_data(f.read(), digest_func)
-    return _digester
+def filestat(filepath):
+    # digesting ensures any change in the file modification
+    # time is reflected in all/most of the returned bytes
+    return digest_data(unicode(os.path.getmtime(filepath)))
+
+
+def file_buster(digest_func, digest_len=3, stat_len=3):
+    _cache = {}
+
+    def _buster(filepath):
+        if stat_len == 0:
+            stat = ""
+        else:
+            stat = filestat(filepath)
+            stat = stat[:stat_len]
+
+        old_bust = _cache.get(filepath, "")
+        if stat and old_bust.endswith(stat):
+            return old_bust
+
+        if digest_len == 0:
+            digest = ""
+        else:
+            with open(filepath, 'rb') as f:
+                digest = digest_data(f.read(), digest_func)
+                digest = digest[:digest_len]
+
+        bust = digest + stat
+        _cache[filepath] = bust
+        return bust
+
+    return _buster
 
 
 def digest_paths(filepaths, digest_func):
     digests = (digest_func(path) for path in filepaths)
-    return digest_data("".join(digests))
+    return digest_data(b"".join(digests))
 
 
 # file system/path traversal and filtering
@@ -154,7 +180,7 @@ def glob_matcher(arg):
 
     # arg is a sequence of glob strings
     if isinstance(arg, (tuple, list)):
-        matchers = map(_matcher, arg)
+        matchers = list(map(_matcher, arg))
         return lambda p: any((m(p) for m in matchers))
 
     # arg is a single glob string
@@ -206,12 +232,12 @@ def mk_fn_dir_map(filepaths):
 def closest_matching_path(code_dirpath, refdir, dirpaths):
     """Find the closest static directory associated with a reference"""
     if len(dirpaths) == 1:
-        return dirpaths[0]
+        return next(iter(dirpaths))
 
     if refdir.endswith("/"):
         refdir = refdir[:-1]
 
-    refdir = filter(bool, refdir.split(os.sep))
+    refdir = tuple(filter(bool, refdir.split(os.sep)))
     code_dirpath = code_dirpath.split(os.sep)
     split_dirpaths = [p.split(os.sep) for p in dirpaths]
 
@@ -236,15 +262,22 @@ def closest_matching_path(code_dirpath, refdir, dirpaths):
     return os.sep.join(longest)
 
 
-def find_static_filepath(ref, static_fn_dirs):
-    dirname, filename = os.path.split(ref.ref_path)
+def find_static_filepath(base_dir, ref_path, static_fn_dirs):
+    dirname, filename = os.path.split(ref_path)
     if filename not in static_fn_dirs:
         # at least the filename must match
         return
 
-    static_dir = closest_matching_path(ref.code_dir, dirname,
+    static_dir = closest_matching_path(base_dir, dirname,
                                        static_fn_dirs[filename])
-    return static_dir
+    return os.path.join(static_dir, filename)
+
+
+def find_static_filepaths(base_dir, ref_paths, static_fn_dirs):
+    for path in ref_paths:
+        static_filepath = find_static_filepath(base_dir, path, static_fn_dirs)
+        if static_filepath:
+            yield static_filepath
 
 
 def expand_path(path, expansions):
@@ -256,23 +289,30 @@ def expand_path(path, expansions):
     return allpaths
 
 
-def expand_ref(ref, expansions):
+def ref_paths(ref, expansions):
     if not expansions:
-        yield ref
+        yield ref.path
         return
 
-    for expanded_path in expand_path(ref.ref_path, expansions):
-        yield ref._replace(
-            ref_path=expanded_path,
-            full_ref=ref.full_ref.replace(ref.ref_path, expanded_path)
-        )
+    for expanded_path in expand_path(ref.path, expansions):
+        yield expanded_path
 
 
-def expanded_refs(refs, expansions):
-    for ref in refs:
-        for r in expand_ref(ref, expansions):
-            yield r 
+def bust_paths(paths, buster):
+    busts = (buster(p) for p in paths)
 
+    full_bust = ""
+
+    for bust in busts:
+        full_bust += bust
+
+    if len(paths) == 1:
+        return full_bust
+
+    bust_len = len(full_bust) // len(paths) 
+
+    return digest_data(full_bust)[:bust_len]
+    
 
 # url/src/href reference parsing and rewriting
 
@@ -305,13 +345,13 @@ QS_REF_RE = re.compile(
 
 
 def mk_plainref(ref):
-    assert ref.ref_type in (PLAIN_REF, FN_REF, QS_REF)
+    assert ref.type in (PLAIN_REF, FN_REF, QS_REF)
 
-    if ref.ref_type == PLAIN_REF:
+    if ref.type == PLAIN_REF:
         return ref.full_ref
-    if ref.ref_type == FN_REF:
+    if ref.type == FN_REF:
         return ref.full_ref.replace("_cb_" + ref.bustcode, "")
-    if ref.ref_type == QS_REF:
+    if ref.type == QS_REF:
         return (ref.full_ref
                 .replace("?_cb_=" + ref.bustcode, "?")
                 .replace("&_cb_=" + ref.bustcode, "")
@@ -319,41 +359,42 @@ def mk_plainref(ref):
 
 
 def set_fn_bustcode(ref, new_bustcode):
-    rdir, rfn = os.path.split(ref.ref_path)
+    rdir, rfn = os.path.split(ref.path)
     basename, ext = os.path.splitext(rfn)
     fnref = rdir + "/" + basename + "_cb_" + new_bustcode + ext
-    return mk_plainref(ref).replace(ref.ref_path, fnref)
+    return mk_plainref(ref).replace(ref.path, fnref)
 
 
 def set_qs_bustcode(ref, new_bustcode):
-    new_refpath = ref.ref_path + "?_cb_=" + new_bustcode
-    new_ref = mk_plainref(ref).replace(ref.ref_path, new_refpath)
+    new_refpath = ref.path + "?_cb_=" + new_bustcode
+    new_ref = mk_plainref(ref).replace(ref.path, new_refpath)
     if new_refpath + "?" in new_ref:
         new_ref = new_ref.replace(new_refpath + "?", new_refpath + "&")
     return new_ref
 
 
 def replace_bustcode(ref, new_bustcode):
-    if ref.ref_type == FN_REF:
+    if ref.type == FN_REF:
         prefix = "_cb_"
-    if ref.ref_type == QS_REF:
+    if ref.type == QS_REF:
         prefix = "_cb_="
     return ref.full_ref.replace(prefix + ref.bustcode, prefix + new_bustcode)
 
 
-def rewrite_ref(ref, new_bustcode, new_ref_type=None):
-    if new_ref_type is None:
-        new_ref_type = ref.ref_type
-    assert new_ref_type in (PLAIN_REF, FN_REF, QS_REF)
+def rewrite_ref(ref, new_bustcode, new_reftype=None):
+    if new_reftype is None:
+        new_reftype = ref.type
 
-    if ref.ref_type == new_ref_type:
+    assert new_reftype in (PLAIN_REF, FN_REF, QS_REF)
+
+    if ref.type == new_reftype:
         return replace_bustcode(ref, new_bustcode)
 
-    if new_ref_type == PLAIN_REF:
+    if new_reftype == PLAIN_REF:
         return ref.fullref
-    if new_ref_type == FN_REF:
+    if new_reftype == FN_REF:
         return set_fn_bustcode(ref, new_bustcode)
-    if new_ref_type == QS_REF:
+    if new_reftype == QS_REF:
         return set_qs_bustcode(ref, new_bustcode)
 
 
@@ -390,7 +431,7 @@ def parse_refs(line_parser, content):
             fullref = match[0]
             if "data:image/" in fullref:
                 continue
-            yield Ref(*("", "", lineno + 1,) + match)
+            yield Ref("", "", lineno + 1, *match)
 
 
 def parse_all_refs(content):
@@ -398,7 +439,12 @@ def parse_all_refs(content):
     if "_cb_" in content:
         all_refs.extend(parse_refs(markedref_line_parser, content))
     
-    return sorted(all_refs, key=lambda r: (r.lineno))
+    seen = {}
+    for ref in all_refs:
+        key = (ref.lineno, ref.full_ref)
+        if key not in seen or seen[key].type < ref.type:
+            seen[key] = ref
+    return sorted(seen.values(), key=lambda r: r.lineno)
 
 
 # project dir scanning
@@ -435,9 +481,11 @@ def multi_iter_filepaths(rootdirs, *args, **kwargs):
 
 def iter_project_paths(args, cfg, subdirs, file_filter, dir_exclude):
     rootdir = parse_project_path(args)
-    subdirs = (os.path.join(rootdir, subdir[1:]) for subdir in subdirs)
+    subdirs = (os.path.join(rootdir, subdir) for subdir in subdirs)
+
     paths = multi_iter_filepaths(subdirs, file_filter=file_filter,
                                  dir_exclude=dir_exclude)
+
     if get_flag(args, '--verbose'):
         return map(unique_dirname_printer(), paths)
     return paths
@@ -451,6 +499,7 @@ def iter_content_paths(args, cfg):
 def iter_static_paths(args, cfg):
     return iter_project_paths(args, cfg, cfg['static_dirs'],
                               cfg['static_filetypes'], cfg['ignore_dirs'])
+
 
 # def resolve_refpath(codepath, path, static_paths):
 #     """Find the best matching path for an url"""
@@ -486,11 +535,9 @@ def iter_static_paths(args, cfg):
 #     refs = expand_ref(ref, cfg['multibust'])
 #     return resolve_references(refs)
 
-
-
 # def update_ref(content, full_ref, ref, old_bust, new_bust,
-#                old_ref_type, new_ref_type):
-#     if old_ref_type == new_ref_type:
+#                old_reftype, new_reftype):
+#     if old_reftype == new_reftype:
 #         new_full_ref = full_ref.replace(old_bust, new_bust)
 #     else:
 #         # TODO: extend regular expression to capture all query parameters
@@ -498,7 +545,6 @@ def iter_static_paths(args, cfg):
 #         #       reconstruct new query params
 #         raise NotImplemented("changing ref types")
 #     return content.replace(full_ref, new_full_ref)
-
 
 # def update_references(args, cfg, filepath, static_paths):
 #     arg_verbose = '-v' in args or '--verbose' in args
@@ -508,11 +554,11 @@ def iter_static_paths(args, cfg):
 #     force_fn = '--filename' in args
 #     force_qs = '--queryparam' in args
 
-#     tgt_ref_type = None
+#     tgt_reftype = None
 #     if force_fn and not force_qs:
-#         tgt_ref_type = FN_REF
+#         tgt_reftype = FN_REF
 #     if force_qs and not force_fn:
-#         tgt_ref_type = QS_REF
+#         tgt_reftype = QS_REF
 
 #     hash_fun = cfg['hash_function']
 #     hash_length = int(cfg['hash_length'])
@@ -527,12 +573,12 @@ def iter_static_paths(args, cfg):
 #     content = orig_content
 
 #     references = parse_marked_refs(orig_content)
-#     for lineno, full_ref, fn_ref, old_bust, old_ref_type in references:
+#     for lineno, full_ref, fn_ref, old_bust, old_reftype in references:
 #         if arg_verbose:
 #             fmtstr = '{1}, line {2:<4}: {0}'
 #             print(fmtstr.format(full_ref, filepath, lineno))
 
-#         new_ref_type = tgt_ref_type or old_ref_type
+#         new_reftype = tgt_reftype or old_reftype
 #         paths = tuple(resolve_reference_paths(cfg, fn_ref, static_paths))
 
 #         if len(paths) == 0:
@@ -540,7 +586,7 @@ def iter_static_paths(args, cfg):
 #                 print(u"missing! : " + full_ref)
 #             continue
 
-#         needs_change = old_ref_type != new_ref_type or arg_force
+#         needs_change = old_reftype != new_reftype or arg_force
 
 #         new_stat = digest_paths(paths, filestat)[:stat_len]
 
@@ -549,7 +595,7 @@ def iter_static_paths(args, cfg):
 #                 print(u"unchanged: " + full_ref)
 #             continue
 
-#         new_hash = digest_paths(paths, file_digester(hash_fun))[:hash_len]
+#         new_hash = digest_paths(paths, file_buster(hash_fun))[:hash_len]
 
 #         if not needs_change and old_bust.endswith(new_hash):
 #             continue
@@ -560,7 +606,7 @@ def iter_static_paths(args, cfg):
 #             print(u"busted   : {0} -> {1}".format(full_ref, new_bust))
 
 #         content = update_ref(content, full_ref, fn_ref, old_bust, new_bust,
-#                              old_ref_type, new_ref_type)
+#                              old_reftype, new_reftype)
 
 #     if content == orig_content:
 #         return
@@ -592,8 +638,9 @@ def scan_project(rootdir, codefile_paths, static_fn_dirs):
     prev_codefile = None
 
     for ref in iter_project_refs(codefile_paths):
-        static_dir = find_static_filepath(ref, static_fn_dirs)
-        if not static_dir:
+        static_filepath = find_static_filepath(ref.code_dir, ref.path,
+                                               static_fn_dirs)
+        if not static_filepath:
             continue
 
         cur_codefile = os.path.join(ref.code_dir, ref.code_fn)
@@ -602,10 +649,10 @@ def scan_project(rootdir, codefile_paths, static_fn_dirs):
             print(cur_codefile)
             prev_codefile = cur_codefile
 
-        fn = ref.ref_path.rsplit(u"/", 1)[-1]
+        static_dir, fn = os.path.split(static_filepath)
         print(
             u"% 6d" % ref.lineno, ref.full_ref, u"->",
-            os.path.join(static_dir, fn).replace(rootdir, "")
+            static_filepath.replace(rootdir, "")
         )
 
         code_dirs[ref.code_dir.replace(rootdir, "")].add(ref.code_fn)
@@ -646,33 +693,71 @@ def init_project(args):
     print(u"omnibust: wrote {0}".format(cfg_path))
 
 
+def find_project_refs(args, cfg):
+    pass
+
+
+def updated_fullref(ref, new_bustcode, target_reftype=None):
+    if target_reftype is None:
+        target_reftype = ref.type
+
+    if ref.bustcode == new_bustcode and ref.type == target_reftype:
+        return
+
+    return rewrite_ref(ref, new_bustcode, target_reftype)
+
+
+def rewrite_content(ref, new_full_ref):
+    with open(ref_codepath(ref), 'r') as f:
+        content = f.read()
+
+    with open(ref_codepath(ref), 'w') as f:
+        f.write(content.replace(ref.full_ref, new_full_ref))
+
+
 def rewrite(args, cfg):
-    rootdir = parse_project_path(args)
+    project_path = parse_project_path(args) + "/"
     target_reftype = FN_REF if '--filename' in args else QS_REF
     no_act = get_flag(args, '--no-act')
-
+    
+    expansions = cfg.get('expansions', None)
+    buster = file_buster(cfg['hash_function'], cfg['digest_length'],
+                         cfg['stat_length'])
+    
     static_filepaths = list(iter_static_paths(args, cfg))
     static_fn_dirs = mk_fn_dir_map(static_filepaths)
 
     codefile_paths = iter_content_paths(args, cfg)
     refs = iter_project_refs(codefile_paths)
-    expansions = cfg.get('expansions', None)
-    refs = expanded_refs(refs, expansions)
 
+    ref = (ref for ref in refs if ref.type != PLAIN_REF)
+    
+    prev_codepath = None
+    
     for ref in refs:
-        static_dir = find_static_filepath(ref, static_fn_dirs)
-        if not static_dir:
+        paths = ref_paths(ref, expansions)
+        static_paths = list(find_static_filepaths(ref.code_dir, paths,
+                                                  static_fn_dirs))
+
+        if not static_paths:
             continue
 
-        print(ref)
+        bustcode = bust_paths(static_paths, buster)
+        new_full_ref = updated_fullref(ref, bustcode, target_reftype)
+
+        if ref_codepath(ref) != prev_codepath:
+            print(ref_codepath(ref).replace(project_path, "", 1))
+            prev_codepath = ref_codepath(ref)
+
+        print("  line %d: %s" % (ref.lineno, new_full_ref))
+    
+        if False and not no_act:
+            rewrite_content(ref, new_full_ref)
 
 
-# def update_cmd(args, cfg):
-#     content_paths = iter_content_paths(args, cfg)
-#     static_paths = list(iter_static_paths(args, cfg))
+def update(args, cfg):
+    pass
 
-#     for filepath in content_paths:
-#         update_references(args, cfg, filepath, static_paths)
 
 # configuration
 
@@ -706,8 +791,8 @@ INIT_CFG = r"""{
     // "ignore_dirs": ["*lib/*", "*lib64/*"],
 
     // "file_encoding": "utf-8",
-    // "hash_function": "crc32",      // sha1, sha256, sha512
-    // "hash_length": 8,
+    // "hash_function": "sha1",      // sha1, sha256, sha512, crc32
+    // "bust_length": 6,
 
     // Cachebust references which contain a multibust marker are
     // expanded using each of the replacements. The cachebust hash will
@@ -733,9 +818,10 @@ DEFAULT_CFG = r"""
 
     "multibust": {},
 
+    // TODO: use file encoding parameter
     "file_encoding": "utf-8",
-    "hash_function": "crc32",
-    "hash_length": 8
+    "hash_function": "sha1",
+    "bust_length": 6
 }
 """
 
@@ -760,11 +846,48 @@ def read_cfg(args):
             cfg.update(json.loads(strip_comments(f.read())))
     except (ValueError, IOError) as e:
         raise BaseError(u"Error parsing '%s', %s" % (cfg_path, e))
+    
+    if 'stat_length' not in cfg:
+        cfg['stat_length'] = cfg['bust_length'] // 2
+    if 'digest_length' not in cfg:
+        cfg['digest_length'] = cfg['bust_length'] - cfg['stat_length']
 
     return cfg
 
 
 # option parsing
+
+VALID_ARGS = set([
+    "-h", "--help",
+    "-q", "--quiet",
+    "--version",
+    "-n", "--no-act",
+    "-f", "--force",
+    "--filename",
+    "--init",
+    "--rewrite"
+])
+
+
+def valid_args(args):
+    args = iter(args)
+    next(args)  # skip path
+
+    for arg in args:
+        if arg in VALID_ARGS:
+            continue
+
+        if arg.startswith("--cfg="):
+            continue
+        
+        if arg == "--cfg":
+            next(args)  # skip path 
+            continue
+
+        print("invalid argument: ", arg)
+        return False
+
+    return True
 
 
 def get_flag(args, flag):
@@ -829,13 +952,14 @@ def dispatch(args):
     if get_flag(args, '--rewrite'):
         return rewrite(args, cfg)
 
+    update(args, cfg)
+
 
 def main(args=sys.argv[1:]):
     """Print help/version info if requested, otherwise do the do run run. """
-    if not args:
-        title = __doc__.splitlines()[0]
+    if not valid_args(args):
         usage = __doc__.split("Options:")[0].strip().split("Usage:")[1]
-        print(title + "\n\nUsage:" + usage)
+        print("\nUsage:" + usage)
         return
 
     if u"--version" in args:
