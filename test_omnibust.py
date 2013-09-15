@@ -29,22 +29,32 @@ def _write_tmp_file(content, path=None):
     return path
 
 
+def touch(path):
+    if os.path.exists(path):
+        with open(path, 'r') as f:
+            content = f.read()
+    else:
+        content = ""
+    with open(path, 'w') as f:
+        f.write(content)
+
+
 def _mk_test_project():
     root = tempfile.mkdtemp()
     subdir_a = os.path.join(root, "subdir_a")
     subdir_b = os.path.join(root, "subdir_b")
-    os.system("touch " + os.path.join(root, "foo.js"))
-    os.system("touch " + os.path.join(root, "bar.js"))
-    os.system("touch " + os.path.join(root, "buzz.py"))
-    os.system("touch " + os.path.join(root, "baz.jpg"))
+    touch(os.path.join(root, "foo.js"))
+    touch(os.path.join(root, "bar.js"))
+    touch(os.path.join(root, "buzz.py"))
+    touch(os.path.join(root, "baz.jpg"))
     os.makedirs(subdir_a)
-    os.system("touch " + os.path.join(subdir_a, "a.py"))
-    os.system("touch " + os.path.join(subdir_a, "a.pyc"))
-    os.system("touch " + os.path.join(subdir_a, "b.py"))
-    os.system("touch " + os.path.join(subdir_a, "b.pyc"))
+    touch(os.path.join(subdir_a, "a.py"))
+    touch(os.path.join(subdir_a, "a.pyc"))
+    touch(os.path.join(subdir_a, "b.py"))
+    touch(os.path.join(subdir_a, "b.pyc"))
     os.makedirs(subdir_b)
-    os.system("touch " + os.path.join(subdir_b, "a.js"))
-    os.system("touch " + os.path.join(subdir_b, "b.js"))
+    touch(os.path.join(subdir_b, "a.js"))
+    touch(os.path.join(subdir_b, "b.js"))
     return root
 
 expansions = {
@@ -95,14 +105,14 @@ def test_filestat():
 
     time.sleep(0.02)
 
-    os.system("touch " + path)
+    touch(path)
 
     assert ob.filestat(path) == ob.filestat(path)
     stat = ob.filestat(path)
 
     time.sleep(0.02)
 
-    os.system("touch " + path)
+    touch(path)
     assert stat != ob.filestat(path)
     assert ob.filestat(path) == ob.filestat(path)
 
@@ -145,7 +155,7 @@ def test_bust_paths():
     
     time.sleep(0.02)
 
-    os.system("touch " + path_a)
+    touch(path_a)
     bustcode_3 = buster([path_a, path_b])
     assert bustcode_1 != bustcode_3
     
