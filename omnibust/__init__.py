@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Omnibust v0.1.0 - A universal cachebusting script
+"""Omnibust v0.1.1 - A universal cachebusting script
 
 Omnibust will scan the files of your web project for static resources
 (js, css, png) and also for urls in your sourcecode (html, js, css, py,

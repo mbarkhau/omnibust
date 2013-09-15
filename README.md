@@ -1,5 +1,4 @@
-Omnibust - A universal cachebusting script
-==========================================
+## Omnibust - A universal cachebusting script
 
 A language and framework agnostic cachbusting script.
 
@@ -12,14 +11,14 @@ reference.
 Requires python >= 2.6 or python >= 3.2.
 [![Build Status](https://travis-ci.org/mbarkhau/omnibust.png)](https://travis-ci.org/mbarkhau/omnibust)
 
-Installation
-============
+
+### Installation
 
     $ pip install omnibust
 
 Or
 
-    $ wget https://bitbucket.org/mbarkhau/omnibust/raw/master/omnibust.py
+    $ wget https://raw.github.com/mbarkhau/omnibust/master/omnibust.py
     $ chmod +x omnibust.py
     $ cp omnibust.py /usr/local/bin/omnibust
 
@@ -27,8 +26,8 @@ Check that it worked
     
     $ omnibust --help
 
-Usage
-=====
+
+### Usage
 
 Project setup:
 
@@ -55,22 +54,20 @@ make certain it won't modify anything in the wrong way.
     $ omnibust status --querystring
     $ omnibust rewrite --querystring
 
-From now on you simply run omnibust rewrite on your project directory and it
-will only update urls with an existing `_cb_` parameter.
+From now on you simply run omnibust rewrite on your project directory
+and it will only update urls with an existing `_cb_` parameter.
 
     $ omnibust rewrite
 
 
-Options and Configuration
-=========================
+### Options and Configuration
 
 
 Explicitly specify files
 TODO: parameter configuration
 
 
-Dynamic URLs and Multibust
-==========================
+### Dynamic URLs and Multibust
 
 Some URLs may not be found with `omnibust init`, esp. if they are not preceded
 by something like `src=` or `url(`, and of course URLs which are dynamically
@@ -119,16 +116,14 @@ And reference it for example from a jinja2 template like this
     <img src="{{ i18n_image[language] }}" />
 
 
-Webserver Setup
-===============
+### Webserver Setup
 
 In order for browsers to cache and reuse your static resources, your
 webserver must set appropriate cache headers. Here are some example
 configuration directives for common webservers.
 
 
-Filename Based Cachbusting
-==========================
+### Filename Based Cachbusting
 
 Omnibust defaults to query parameter `app.js?_cb_=0123abcd` based
 cachbusting, but it can also rewrite the filenames in urls to the form
