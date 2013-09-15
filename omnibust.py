@@ -2,10 +2,10 @@
 """Omnibust v0.1.0 - A universal cachebusting script
 
 Omnibust will scan the files of your web project for static resources
-(js, css, png) and also for urls which reference these resources in your
-sourcecode (html, js, css, py, rb, etc.). It will add or update a
-cachebust parameter on any such urls which is based on the static
-resources they reference.
+(js, css, png) and also for urls in your sourcecode (html, js, css, py,
+rb, etc.) which reference these resources. It will add or update a
+cachebust parameter on any such urls based on the static resources they
+reference.
 
 First steps:
     omnibust init                       # scan and write omnibust.cfg

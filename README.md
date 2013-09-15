@@ -1,14 +1,16 @@
 Omnibust - A universal cachebusting script
 ==========================================
 
-A language and framework agnostic cachbusting script. Its only
-dependency is python >= 2.6 and python >= 3.2.
+A language and framework agnostic cachbusting script.
 
-Omnibust will scan your project files for static resources files
-(js, css, png) and also for urls which reference these resources in your
-sourcecode (html, js, css, py, rb, etc.). It will rewrite any urls to
-successfully matched static resource with a cachebust parameter.
+Omnibust will scan the files of your web project for static resources
+(js, css, png) and also for urls in your sourcecode (html, js, css, py,
+rb, etc.) which reference these resources. It will add or update a
+cachebust parameter on any such urls based on the static resources they
+reference.
 
+Requires python >= 2.6 or python >= 3.2.
+[![Build Status](https://travis-ci.org/mbarkhau/omnibust.png)](https://travis-ci.org/mbarkhau/omnibust)
 
 Installation
 ============
@@ -17,7 +19,7 @@ Installation
 
 Or
 
-    $ wget https://bitbucket.org/mbarkhau/omnibust/raw/.../omnibust.py
+    $ wget https://bitbucket.org/mbarkhau/omnibust/raw/master/omnibust.py
     $ chmod +x omnibust.py
     $ cp omnibust.py /usr/local/bin/omnibust
 
