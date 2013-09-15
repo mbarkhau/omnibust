@@ -6,21 +6,17 @@ Omnibust will scan your project files for static resources files
 sourcecode (html, js, css, py, rb, etc.). It will rewrite any urls to
 successfully matched static resource with a cachebust parameter.
 
-
 First steps:
 
-    omnibust path/to/project --init     # scan and write omnibust.cfg
-    omnibust path/to/project --rewrite  # add cachebust to urls
-    omnibust path/to/project            # update urls with cachebust
-                                        # when static files are changed
+    omnibust init                       # scan and write omnibust.cfg
+    omnibust status                     # view updated urls
+    omnibust rewrite                    # add or update cachebust parameters
 
 Usage:
     omnibust (--help|--version)
-    omnibust <project_path> --init [--force]
-    omnibust <project_path> --rewrite [--cfg=<cfg_path>]
-                [--no-act] [--force] [--filename]
-    omnibust <project_path> [--cfg=<cfg_path>]
-                [--no-act] [--force]
+    omnibust init (--filename | --querystring)
+    omnibust status [--no-init] [--filename | --querystring]
+    omnibust rewrite [--no-init] [--filename | --querystring]
 
 Options:
     -h --help           Display this message
@@ -28,18 +24,13 @@ Options:
     -q --quiet          No output
     --version           Display version number
 
-    -i --init
-    -r --rewrite
-
-    --cfg=<cfg_path>    Path to configuration file [default: omnibust.cfg]
-    -n --no-act         Don't write to files, only display changes
-    -f --force          Update cachebust parameters even if the modification
-                            time of the file is the same as recorded in the
-                            current cachebust parameter.
+    -n --no-init        Use default configuration to scan for and update
+                            existing '_cb_' cachebust parameters (may be slow).
+    --querystring       Rewrites all references so the querystring contains a
+                            cachebust parameter.
     --filename          Rewrites all references so the filename contains a
                             cachebust parameter rather than the querystring.
 """
-# python 2/3 compat
 from __future__ import print_function
 import base64
 import codecs
@@ -136,7 +127,7 @@ def filestat(filepath):
     return digest_data(unicode(os.path.getmtime(filepath)))
 
 
-def file_buster(digest_func, digest_len=3, stat_len=3):
+def mk_buster(digest_func, digest_len=3, stat_len=3):
     _cache = {}
 
     def _buster(filepath):
@@ -161,7 +152,22 @@ def file_buster(digest_func, digest_len=3, stat_len=3):
         _cache[filepath] = bust
         return bust
 
-    return _buster
+    def _bust_paths(paths):
+        busts = (_buster(p) for p in paths)
+    
+        full_bust = ""
+    
+        for bust in busts:
+            full_bust += bust
+    
+        if len(paths) == 1:
+            return full_bust
+    
+        bust_len = len(full_bust) // len(paths) 
+    
+        return digest_data(full_bust)[:bust_len]
+
+    return _bust_paths
 
 
 def digest_paths(filepaths, digest_func):
@@ -188,20 +194,6 @@ def glob_matcher(arg):
         return _matcher(arg)
 
     return arg
-
-
-def unique_dirname_printer():
-    seen_dirs = set()
-
-    def _printer(path):
-        dirname = os.path.dirname(path)
-        if dirname not in seen_dirs:
-            print(dirname)
-            seen_dirs.add(dirname)
-        return path
-
-    return _printer
-
 
 # ref -> path matching
 
@@ -280,38 +272,22 @@ def find_static_filepaths(base_dir, ref_paths, static_fn_dirs):
             yield static_filepath
 
 
-def expand_path(path, expansions):
+def expand_path(path, multibust):
     allpaths = set([path])
-    for search, replacements in expansions.items():
+    for search, replacements in multibust.items():
         if search in path:
             allpaths.update((path.replace(search, r) for r in replacements))
 
     return allpaths
 
 
-def ref_paths(ref, expansions):
-    if not expansions:
+def ref_paths(ref, multibust):
+    if not multibust:
         yield ref.path
         return
 
-    for expanded_path in expand_path(ref.path, expansions):
+    for expanded_path in expand_path(ref.path, multibust):
         yield expanded_path
-
-
-def bust_paths(paths, buster):
-    busts = (buster(p) for p in paths)
-
-    full_bust = ""
-
-    for bust in busts:
-        full_bust += bust
-
-    if len(paths) == 1:
-        return full_bust
-
-    bust_len = len(full_bust) // len(paths) 
-
-    return digest_data(full_bust)[:bust_len]
     
 
 # url/src/href reference parsing and rewriting
@@ -381,20 +357,22 @@ def replace_bustcode(ref, new_bustcode):
     return ref.full_ref.replace(prefix + ref.bustcode, prefix + new_bustcode)
 
 
-def rewrite_ref(ref, new_bustcode, new_reftype=None):
-    if new_reftype is None:
-        new_reftype = ref.type
+def updated_fullref(ref, new_bustcode, target_reftype=None):
+    if target_reftype is None:
+        target_reftype = ref.type
 
-    assert new_reftype in (PLAIN_REF, FN_REF, QS_REF)
+    assert target_reftype in (PLAIN_REF, FN_REF, QS_REF)
+    if ref.bustcode == new_bustcode and ref.type == target_reftype:
+        return
 
-    if ref.type == new_reftype:
+    if ref.type == target_reftype:
         return replace_bustcode(ref, new_bustcode)
 
-    if new_reftype == PLAIN_REF:
+    if target_reftype == PLAIN_REF:
         return ref.fullref
-    if new_reftype == FN_REF:
+    if target_reftype == FN_REF:
         return set_fn_bustcode(ref, new_bustcode)
-    if new_reftype == QS_REF:
+    if target_reftype == QS_REF:
         return set_qs_bustcode(ref, new_bustcode)
 
 
@@ -403,6 +381,9 @@ def rewrite_ref(ref, new_bustcode, new_reftype=None):
 def plainref_line_parser(line):
     for match in PLAIN_REF_RE.finditer(line):
         full_ref = match.group()
+        if "_cb_" in full_ref:
+            continue
+
         ref_path = match.group('path')
 
         yield full_ref, ref_path, "", PLAIN_REF
@@ -434,8 +415,11 @@ def parse_refs(line_parser, content):
             yield Ref("", "", lineno + 1, *match)
 
 
-def parse_all_refs(content):
-    all_refs = list(parse_refs(plainref_line_parser, content))
+def parse_content_refs(content, parse_plain=True):
+    all_refs = []
+    if parse_plain:
+        all_refs.extend(parse_refs(plainref_line_parser, content))
+
     if "_cb_" in content:
         all_refs.extend(parse_refs(markedref_line_parser, content))
     
@@ -447,7 +431,22 @@ def parse_all_refs(content):
     return sorted(seen.values(), key=lambda r: r.lineno)
 
 
+def iter_refs(codefile_paths, parse_plain=True, encoding='utf-8'):
+    for codefile_path in codefile_paths:
+        code_dir, code_fn = os.path.split(codefile_path)
+        try:
+            with codecs.open(codefile_path, 'r', encoding) as fp:
+                content = fp.read()
+        except:
+            print("omnibust: error reading '%s'" % codefile_path)
+            continue
+        
+        for ref in parse_content_refs(content, parse_plain):
+            yield ref._replace(code_dir=code_dir, code_fn=code_fn)
+
+
 # project dir scanning
+
 
 def iter_filepaths(rootdir, file_filter=None, file_exclude=None,
                    dir_filter=None, dir_exclude=None):
@@ -479,26 +478,22 @@ def multi_iter_filepaths(rootdirs, *args, **kwargs):
             yield path
 
 
-def iter_project_paths(args, cfg, subdirs, file_filter, dir_exclude):
-    rootdir = parse_project_path(args)
-    subdirs = (os.path.join(rootdir, subdir) for subdir in subdirs)
-
-    paths = multi_iter_filepaths(subdirs, file_filter=file_filter,
-                                 dir_exclude=dir_exclude)
-
-    if get_flag(args, '--verbose'):
-        return map(unique_dirname_printer(), paths)
-    return paths
+def init_project_paths():
+    # scan project for files we're interested in
+    filepaths = list(iter_filepaths(".", dir_exclude=INIT_EXCLUDE_GLOBS))
+    static_filepaths = [p for p in filepaths if ext(p) in STATIC_FILETYPES]
+    codefile_paths = [p for p in filepaths if ext(p) in CODE_FILETYPES]
+    return codefile_paths, static_filepaths
 
 
-def iter_content_paths(args, cfg):
-    return iter_project_paths(args, cfg, cfg['code_dirs'],
-                              cfg['code_filetypes'], cfg['ignore_dirs'])
-
-
-def iter_static_paths(args, cfg):
-    return iter_project_paths(args, cfg, cfg['static_dirs'],
-                              cfg['static_filetypes'], cfg['ignore_dirs'])
+def cfg_project_paths(cfg):
+    code_filepaths = multi_iter_filepaths(cfg['code_dirs'],
+                                          cfg['code_fileglobs'],
+                                          cfg['ignore_dirglobs'])
+    static_filepaths = multi_iter_filepaths(cfg['static_dirs'],
+                                            cfg['static_fileglobs'],
+                                            cfg['ignore_dirglobs'])
+    return code_filepaths, static_filepaths
 
 
 # def resolve_refpath(codepath, path, static_paths):
@@ -595,7 +590,7 @@ def iter_static_paths(args, cfg):
 #                 print(u"unchanged: " + full_ref)
 #             continue
 
-#         new_hash = digest_paths(paths, file_buster(hash_fun))[:hash_len]
+#         new_hash = digest_paths(paths, mk_buster(hash_fun))[:hash_len]
 
 #         if not needs_change and old_bust.endswith(new_hash):
 #             continue
@@ -618,93 +613,34 @@ def iter_static_paths(args, cfg):
 #         f.write(content)
 
 
-def iter_project_refs(codefile_paths):
-    for codefile_path in codefile_paths:
-        code_dir, code_fn = os.path.split(codefile_path)
-        try:
-            with codecs.open(codefile_path, 'r', 'utf-8') as fp:
-                content = fp.read()
-        except:
-            continue
+def ref_printer(refs):
+    prev_codepath = None
+    for ref, paths, new_full_ref  in refs:
+        codepath = os.path.join(ref.code_dir, ref.code_fn)
+        if codepath != prev_codepath:
+            print(codepath)
+            prev_codepath = codepath
         
-        for ref in parse_all_refs(content):
-            yield ref._replace(code_dir=code_dir, code_fn=code_fn)
+        lineno = "% 5d" % ref.lineno
+        print(" %s %s" % (lineno, ref.full_ref))
+        print("    ->", new_full_ref)
+        yield ref, paths, new_full_ref
+    
+    if prev_codepath is None:
+        print("omnibust: nothing to cachebust")
 
 
-def scan_project(rootdir, codefile_paths, static_fn_dirs):
-    code_dirs = collections.defaultdict(set)
-    static_dirs = collections.defaultdict(set)
+def busted_refs(ref_map, cfg, target_reftype):
+    buster = mk_buster(cfg['hash_function'], cfg['digest_length'],
+                       cfg['stat_length'])
 
-    prev_codefile = None
-
-    for ref in iter_project_refs(codefile_paths):
-        static_filepath = find_static_filepath(ref.code_dir, ref.path,
-                                               static_fn_dirs)
-        if not static_filepath:
+    for ref, paths in ref_map.items():
+        new_bustcode = buster(paths)
+        if ref.bustcode == new_bustcode:
             continue
-
-        cur_codefile = os.path.join(ref.code_dir, ref.code_fn)
-        cur_codefile = cur_codefile.replace(rootdir, "")
-        if cur_codefile != prev_codefile:
-            print(cur_codefile)
-            prev_codefile = cur_codefile
-
-        static_dir, fn = os.path.split(static_filepath)
-        print(
-            u"% 6d" % ref.lineno, ref.full_ref, u"->",
-            static_filepath.replace(rootdir, "")
-        )
-
-        code_dirs[ref.code_dir.replace(rootdir, "")].add(ref.code_fn)
-        static_dirs[static_dir.replace(rootdir, "")].add(fn)
-
-    return code_dirs, static_dirs
-
-
-def init_project(args):
-    rootdir = parse_project_path(args)
-    cfg_path = os.path.join(rootdir, "omnibust.cfg")
-    if not get_flag(args, '--force') and os.path.exists(cfg_path):
-        raise PathError(u"config already exists", cfg_path)
-
-    # scan project for files we're interested in
-    filepaths = list(iter_filepaths(rootdir, dir_exclude=INIT_EXCLUDE_GLOBS))
-    static_filepaths = [p for p in filepaths if ext(p) in STATIC_FILETYPES]
-    codefile_paths = [p for p in filepaths if ext(p) in CODE_FILETYPES]
-
-    # init collections for ref check
-    static_fn_dirs = mk_fn_dir_map(static_filepaths)
-
-    # find codepaths with refs
-    code_dirs, static_dirs = scan_project(rootdir, codefile_paths,
-                                          static_fn_dirs)
-
-    static_extensions = extension_globs(flatten(static_dirs.values()))
-    code_extensions = extension_globs(flatten(code_dirs.values()))
-
-    with codecs.open(cfg_path, 'w', 'utf-8') as f:
-        f.write(INIT_CFG % (
-            dumpslist(static_dirs.keys()),
-            dumpslist(static_extensions),
-            dumpslist(code_dirs.keys()),
-            dumpslist(code_extensions)
-        ))
-
-    print(u"omnibust: wrote {0}".format(cfg_path))
-
-
-def find_project_refs(args, cfg):
-    pass
-
-
-def updated_fullref(ref, new_bustcode, target_reftype=None):
-    if target_reftype is None:
-        target_reftype = ref.type
-
-    if ref.bustcode == new_bustcode and ref.type == target_reftype:
-        return
-
-    return rewrite_ref(ref, new_bustcode, target_reftype)
+        print(ref.type, ref.bustcode, new_bustcode)
+        new_fullref = updated_fullref(ref, new_bustcode, target_reftype)
+        yield ref, paths, new_fullref
 
 
 def rewrite_content(ref, new_full_ref):
@@ -715,51 +651,97 @@ def rewrite_content(ref, new_full_ref):
         f.write(content.replace(ref.full_ref, new_full_ref))
 
 
-def rewrite(args, cfg):
-    project_path = parse_project_path(args) + "/"
-    target_reftype = FN_REF if '--filename' in args else QS_REF
-    no_act = get_flag(args, '--no-act')
-    
-    expansions = cfg.get('expansions', None)
-    buster = file_buster(cfg['hash_function'], cfg['digest_length'],
-                         cfg['stat_length'])
-    
-    static_filepaths = list(iter_static_paths(args, cfg))
+def scan_project(codefile_paths, static_filepaths, multibust=None,
+                 parse_plain=True, encoding='utf-8'):
+    refs = collections.OrderedDict()
+
+    # init mapping to check if a ref has a static file
     static_fn_dirs = mk_fn_dir_map(static_filepaths)
 
-    codefile_paths = iter_content_paths(args, cfg)
-    refs = iter_project_refs(codefile_paths)
+    for ref in iter_refs(codefile_paths, parse_plain, encoding=encoding):
+        paths = ref_paths(ref, multibust) if multibust else [ref.path] 
+        reffed_filepaths = list(find_static_filepaths(ref.code_dir, paths,
+                                                      static_fn_dirs))
+        if reffed_filepaths:
+            refs[ref] = reffed_filepaths
 
-    ref = (ref for ref in refs if ref.type != PLAIN_REF)
+    return refs
+
+
+def init_project(args):
+    if os.path.exists(".omnibust"):
+        raise PathError(u"config already exists", ".omnibust")
+
+    ref_map = scan_project(*init_project_paths())
+
+    static_dirs = set(os.path.split(p)[0] for p in flatten(ref_map.values()))
+    code_dirs = set(r.code_dir for r in ref_map)
+    static_extensions = extension_globs(flatten(ref_map.values()))
+    code_extensions = extension_globs((r.code_fn for r in ref_map))
     
-    prev_codepath = None
-    
-    for ref in refs:
-        paths = ref_paths(ref, expansions)
-        static_paths = list(find_static_filepaths(ref.code_dir, paths,
-                                                  static_fn_dirs))
+    with codecs.open(".omnibust", 'w', 'utf-8') as f:
+        f.write(INIT_CFG % (
+            dumpslist(list(static_dirs)),
+            dumpslist(static_extensions),
+            dumpslist(list(code_dirs)),
+            dumpslist(code_extensions)
+        ))
 
-        if not static_paths:
-            continue
-
-        bustcode = bust_paths(static_paths, buster)
-        new_full_ref = updated_fullref(ref, bustcode, target_reftype)
-
-        if ref_codepath(ref) != prev_codepath:
-            print(ref_codepath(ref).replace(project_path, "", 1))
-            prev_codepath = ref_codepath(ref)
-
-        print("  line %d: %s" % (ref.lineno, new_full_ref))
-    
-        if False and not no_act:
-            rewrite_content(ref, new_full_ref)
+    print(u"omnibust: wrote {0}".format(".omnibust"))
 
 
-def update(args, cfg):
-    pass
+def status(args, cfg):
+    target_reftype = get_target_reftype(args)
+
+    ref_map = scan_project(*cfg_project_paths(cfg), multibust=cfg['multibust'],
+                           parse_plain=target_reftype is not None,
+                           encoding=cfg['file_encoding'])
+
+    list(ref_printer(busted_refs(ref_map, cfg, target_reftype)))
+
+
+def rewrite(args, cfg):
+    target_reftype = get_target_reftype(args)
+    ref_map = scan_project(*cfg_project_paths(cfg), multibust=cfg['multibust'],
+                           parse_plain=target_reftype is not None,
+                           encoding=cfg['file_encoding'])
+
+    refs = ref_printer(busted_refs(ref_map, cfg, target_reftype))
+    for ref, _, new_full_ref in refs:
+        rewrite_content(ref, new_full_ref)
 
 
 # configuration
+
+def read_cfg(args):
+    cfg = json.loads(strip_comments(DEFAULT_CFG))
+
+    if not get_flag(args, '--no-init') and not os.path.exists(".omnibust"):
+        raise PathError(u"try 'omnibust init'", ".omnibust")
+        return None
+
+    if not get_flag(args, '--no-init'):
+        try:
+            with codecs.open(".omnibust", 'r', encoding='utf-8') as f:
+                cfg.update(json.loads(strip_comments(f.read())))
+        except (ValueError, IOError) as e:
+            raise BaseError(u"Error parsing '%s', %s" % (".omnibust", e))
+    
+    if 'stat_length' not in cfg:
+        cfg['stat_length'] = cfg['bust_length'] // 2
+    if 'digest_length' not in cfg:
+        cfg['digest_length'] = cfg['bust_length'] - cfg['stat_length']
+
+    return cfg
+
+
+def dumpslist(l):
+    return json.dumps(l, indent=8).replace("]", "    ]")
+
+
+def strip_comments(data):
+    return re.sub("(^|\s)//.*", "", data)
+
 
 STATIC_FILETYPES = (
     ".png", ".gif", ".jpg", ".jpeg", ".ico", ".webp", ".svg",
@@ -778,21 +760,45 @@ INIT_EXCLUDE_GLOBS = (
     "*lib/*", "*lib64/*", ".git/*", ".hg/*", ".svn/*",
 )
 
+DEFAULT_CFG = r"""
+{
+    "static_dirs": ["."],
+
+    "static_fileglobs": %s,
+
+    "code_dirs": ["."],
+
+    "code_fileglobs": %s,
+
+    "ignore_dirglobs": ["*.git/*", "*.hg/*", "*.svn/*", "*lib/*", "*lib64/*"],
+
+    "multibust": {},
+
+    // TODO: use file encoding parameter
+    "file_encoding": "utf-8",
+    "hash_function": "sha1",
+    "bust_length": 6
+}
+""" % (
+   dumpslist(["*" + ft for ft in STATIC_FILETYPES]),
+   dumpslist(["*" + ft for ft in CODE_FILETYPES])
+)
+
 INIT_CFG = r"""{
     // paths are relative to the project directory
     "static_dirs": %s,
 
-    "static_filetypes": %s,
+    "static_fileglobs": %s,
 
     "code_dirs": %s,
 
-    "code_filetypes": %s
+    "code_fileglobs": %s,
 
-    // "ignore_dirs": ["*lib/*", "*lib64/*"],
+    "ignore_dirglobs": ["*.git/*", "*.hg/*", "*.svn/*", "*lib/*", "*lib64/*"]
 
-    // "file_encoding": "utf-8",
+    // "file_encoding": "utf-8",     // for reading codefiles
     // "hash_function": "sha1",      // sha1, sha256, sha512, crc32
-    // "bust_length": 6,
+    // "bust_length": 6
 
     // Cachebust references which contain a multibust marker are
     // expanded using each of the replacements. The cachebust hash will
@@ -810,81 +816,38 @@ INIT_CFG = r"""{
 """
 
 
-DEFAULT_CFG = r"""
-{
-    "file_encoding": "utf-8",
-
-    "ignore_dirs": ["*.git/*", "*.hg/*", "*.svn/*"],
-
-    "multibust": {},
-
-    // TODO: use file encoding parameter
-    "file_encoding": "utf-8",
-    "hash_function": "sha1",
-    "bust_length": 6
-}
-"""
-
-
-def dumpslist(l):
-    return json.dumps(l, indent=8).replace("]", "    ]")
-
-
-def strip_comments(data):
-    return re.sub("(^|\s)//.*", "", data)
-
-
-def read_cfg(args):
-    cfg_path = parse_cfg_path(args)
-    if not os.path.exists(cfg_path):
-        raise PathError(u"config file required", cfg_path)
-        return None
-
-    cfg = json.loads(strip_comments(DEFAULT_CFG))
-    try:
-        with codecs.open(cfg_path, 'r', encoding='utf-8') as f:
-            cfg.update(json.loads(strip_comments(f.read())))
-    except (ValueError, IOError) as e:
-        raise BaseError(u"Error parsing '%s', %s" % (cfg_path, e))
-    
-    if 'stat_length' not in cfg:
-        cfg['stat_length'] = cfg['bust_length'] // 2
-    if 'digest_length' not in cfg:
-        cfg['digest_length'] = cfg['bust_length'] - cfg['stat_length']
-
-    return cfg
-
-
 # option parsing
 
 VALID_ARGS = set([
     "-h", "--help",
     "-q", "--quiet",
     "--version",
-    "-n", "--no-act",
-    "-f", "--force",
+    "--no-init",
     "--filename",
-    "--init",
-    "--rewrite"
+    "--querystring",
 ])
 
 
 def valid_args(args):
+    if len(args) == 0:
+        return False
+
     args = iter(args)
-    next(args)  # skip path
+    cmd = next(args)
+    if cmd not in ("init", "status", "rewrite"):
+        print("omnibust: invalid command '%s'" % cmd)
+        return False
+
+    if '--filename' in args and '--querystring' in args:
+        print("omnibust: invalid invocation, "
+              "only one of '--filename' and '--querystring' is permitted")
+        return False
 
     for arg in args:
         if arg in VALID_ARGS:
             continue
 
-        if arg.startswith("--cfg="):
-            continue
-        
-        if arg == "--cfg":
-            next(args)  # skip path 
-            continue
-
-        print("invalid argument: ", arg)
+        print("omnibust: invalid argument '%s' " % arg)
         return False
 
     return True
@@ -892,6 +855,18 @@ def valid_args(args):
 
 def get_flag(args, flag):
     return flag in args or flag[1:3] in args
+
+
+def get_command(args):
+    return args[0]
+
+
+def get_target_reftype(args):
+    if get_flag(args, '--filename'):
+        return FN_REF
+    if get_flag(args, '--querystring'):
+        return QS_REF
+    return None
 
 
 def get_opt(args, opt, default='__sentinel__'):
@@ -915,44 +890,23 @@ def get_opt(args, opt, default='__sentinel__'):
     raise KeyError(opt)
 
 
-def parse_project_path(args):
-    path = args[0]
-    if not os.path.exists(path):
-        raise PathError(u"No such directory", path)
-
-    if not os.path.isdir(path):
-        raise PathError(u"Not a directory", path)
-
-    return path
-
-
-def parse_cfg_path(args):
-    path = parse_project_path(args)
-    cfg_path = get_opt(args, '--cfg', "omnibust.cfg")
-
-    if not os.path.exists(cfg_path):
-        cfg_path = os.path.join(path, cfg_path)
-
-    if not os.path.exists(cfg_path):
-        msg = u"No such file\nDid you mean '%s --init' ?"
-        raise PathError(msg % " ".join(sys.argv[:2]), cfg_path)
-
-    return cfg_path
-
-
 # top level program
 
 
 def dispatch(args):
-    if get_flag(args, '--init'):
+    if get_command(args) == 'init':
         return init_project(args)
 
     cfg = read_cfg(args)
 
-    if get_flag(args, '--rewrite'):
+    if get_command(args) == 'status':
+        return status(args, cfg)
+
+    if get_command(args) == 'rewrite':
         return rewrite(args, cfg)
 
-    update(args, cfg)
+    print("omnibust: valid commands (init|status|rewrite)")
+    return 1
 
 
 def main(args=sys.argv[1:]):

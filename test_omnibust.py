@@ -117,20 +117,47 @@ def test_digest_data():
     assert digest("test", 'sha1') != digest("test", 'md5')
 
 
-def test_file_buster():
+def test_buster():
     path_a = _write_tmp_file("test")
     time.sleep(0.02)
     path_b = _write_tmp_file("test")
 
-    crc_digester = ob.file_buster('crc32', 4, 4)
+    crc_buster = ob.mk_buster('crc32', 4, 4)
 
-    assert crc_digester(path_a)[:4] == crc_digester(path_b)[:4]
-    assert crc_digester(path_a)[4:] != crc_digester(path_b)[4:]
+    assert crc_buster([path_a])[:4] == crc_buster([path_b])[:4]
+    assert crc_buster([path_a])[4:] != crc_buster([path_b])[4:]
 
     path_a = _write_tmp_file("foo")
     path_b = _write_tmp_file("bar")
 
-    assert crc_digester(path_a) != crc_digester(path_b)
+    assert crc_buster([path_a]) != crc_buster([path_b])
+
+
+def test_bust_paths():
+    buster = ob.mk_buster('sha1')
+    
+    path_a = _write_tmp_file("foo")
+    path_b = _write_tmp_file("bar")
+
+    bustcode_1 = buster([path_a, path_b])
+    bustcode_2 = buster([path_a, path_b])
+    assert bustcode_1 == bustcode_2
+    
+    time.sleep(0.02)
+
+    os.system("touch " + path_a)
+    bustcode_3 = buster([path_a, path_b])
+    assert bustcode_1 != bustcode_3
+    
+    time.sleep(0.02)
+
+    open(path_a, 'w').write("baz")
+    bustcode_4 = buster([path_a, path_b])
+    assert bustcode_3 != bustcode_4
+
+    bustcode_5 = buster([path_a])
+    bustcode_6 = buster([path_a])
+    assert bustcode_5 == bustcode_6
 
 
 def test_glob_matcher():
@@ -163,21 +190,6 @@ def test_multi_iter_filepaths():
     root = _mk_test_project()
     dirs = [os.path.join(root, "subdir_a"), os.path.join(root, "subdir_b")]
     assert len(list(ob.multi_iter_filepaths(dirs))) == 6
-
-
-def test_unique_dirname_printer():
-    # just check that it's a wrapper
-    printer = ob.unique_dirname_printer()
-    orig_out = sys.stdout
-    tmp_out = sys.stdout = StringIO()
-    assert printer("test/foo") == "test/foo"
-    assert printer("foo/foo") == "foo/foo"
-    assert printer("bar/foo") == "bar/foo"
-    sys.stdout = orig_out
-    lines = tmp_out.getvalue().splitlines()
-    assert lines[0] == "test"
-    assert lines[1] == "foo"
-    assert lines[2] == "bar"
 
 
 def test_filter_longest():
@@ -279,33 +291,6 @@ def test_ref_paths():
     assert "/static/app_exp_b.js" in static_paths
 
 
-def test_bust_paths():
-    buster = ob.file_buster('sha1')
-    
-    path_a = _write_tmp_file("foo")
-    path_b = _write_tmp_file("bar")
-
-    bustcode_1 = ob.bust_paths([path_a, path_b], buster)
-    bustcode_2 = ob.bust_paths([path_a, path_b], buster)
-    assert bustcode_1 == bustcode_2
-    
-    time.sleep(0.02)
-
-    os.system("touch " + path_a)
-    bustcode_3 = ob.bust_paths([path_a, path_b], buster)
-    assert bustcode_1 != bustcode_3
-    
-    time.sleep(0.02)
-
-    open(path_a, 'w').write("baz")
-    bustcode_4 = ob.bust_paths([path_a, path_b], buster)
-    assert bustcode_3 != bustcode_4
-
-    bustcode_5 = ob.bust_paths([path_a], buster)
-    bustcode_6 = ob.bust_paths([path_a], buster)
-    assert bustcode_5 == bustcode_6
-
-
 def test_mk_plainref():
     assert ob.mk_plainref(p_ref) == "url('/static/app.js')"
     assert ob.mk_plainref(fn_ref) == "url('/static/app.js?foo=12&bar=34')"
@@ -337,13 +322,13 @@ def test_replace_bustcode():
     assert busted == "url('/static/app.js?_cb_=abcdef&a=b')"
 
 
-def test_rewrite_ref():
+def test_updated_fullref():
     # "codepath, lineno, reftype, fullref, refpath, bustcode"
-    rewritten = ob.rewrite_ref(p_ref, "abcdef", ob.QS_REF)
+    rewritten = ob.updated_fullref(p_ref, "abcdef", ob.QS_REF)
     assert rewritten == "url('/static/app.js?_cb_=abcdef')"
-    rewritten = ob.rewrite_ref(qs_ref, "abcdef", ob.QS_REF)
+    rewritten = ob.updated_fullref(qs_ref, "abcdef", ob.QS_REF)
     assert rewritten == "url('/static/app.js?_cb_=abcdef&a=b')"
-    rewritten = ob.rewrite_ref(fn_ref, "abcdef", ob.FN_REF)
+    rewritten = ob.updated_fullref(fn_ref, "abcdef", ob.FN_REF)
     assert rewritten == "url('/static/app_cb_abcdef.js?foo=12&bar=34')"
 
 
@@ -353,6 +338,20 @@ def test_plainref_line_parser():
     assert not bust
     assert ref_path == "/static/img/logo.png"
     assert ref_type == ob.PLAIN_REF
+    
+    line = '<img src="/static/img/logo_cb_1234.png"/>'
+    try:
+        next(ob.plainref_line_parser(line))
+        assert False, "should have failed with StopIteration"
+    except StopIteration:
+        pass
+
+    line = '<img src="/static/img/logo.png?_cb_=1234"/>'
+    try:
+        next(ob.plainref_line_parser(line))
+        assert False, "should have failed with StopIteration"
+    except StopIteration:
+        pass
 
 
 def test_markedref_line_parser():
@@ -376,10 +375,10 @@ def test_markedref_line_parser():
     assert ref_type == ob.QS_REF
 
 
-def test_parse_all_refs():
-    assert len(ob.parse_all_refs("")) == 0
+def test_parse_content_refs():
+    assert len(ob.parse_content_refs("")) == 0
 
-    refs = ob.parse_all_refs("""
+    refs = ob.parse_content_refs("""
         <img src="data:image/png;base64,iV==">
         <script src="/static/js/lib.js"></script>
         <script src="/static/js/app.js?_cb_=123"></script>
@@ -406,17 +405,6 @@ def test_parse_all_refs():
     assert "xyz" in busts
 
 
-def test_parse_project_path():
-    assert ob.parse_project_path(["."]) == "."
-    assert ob.parse_project_path([".."]) == ".."
-    assert ob.parse_project_path(["../omnibust"]) == "../omnibust"
-    try:
-        ob.parse_project_path(["foo/bar"])
-        assert False, "should have raised path error"
-    except ob.PathError:
-        pass
-
-
 def test_strip_comments():
     stripped = ob.strip_comments("""
         http://foo.com/bar    // a comment
@@ -438,6 +426,8 @@ def test_get_flag():
 def test_get_opt():
     assert ob.get_opt(["--baz", "--foo=bar"], '--foo') == "bar"
     assert ob.get_opt(["--baz", "--foo", "bar"], '--foo') == "bar"
+    assert ob.get_opt(["baz", "--foo", "bar"], '--foo') == "bar"
+
     try:
         ob.get_opt(["--baz", "--foo=bar"], '--baz')
         assert False, "expected KeyError"
@@ -446,7 +436,7 @@ def test_get_opt():
 
 
 if __name__ == '__main__':
-    # quick and dirty test harness, mainly for python3 compat testing
+    # quick and dirty test harness, mainly for python3 and win compat testing
     fail = []
 
     for k, v in list(locals().items()):
