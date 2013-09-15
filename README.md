@@ -144,9 +144,7 @@ rewrite the urls of requests it recieves, by stripping out the cachebust
 parameter, and serving the correct static resource. Here are some
 configuration directives for common webservers.
 
-
-Nginx
------
+	# Nginx
 
 	location ~* ^/static/(.+?)_cb_\w+(\.\w+)$ {
 	    alias /srv/www/static/$1$2;
@@ -154,7 +152,6 @@ Nginx
 	    expires max;
 	}
  
+	# Apache
 
-Apache
-------
-
+	RewriteRule ^/static/(.+?)_cb_\w+(\.\w+)$ /static/$1$2
