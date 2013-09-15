@@ -174,24 +174,6 @@ def test_glob_matcher():
     assert not jpg_matcher("foo/bar.py")
 
 
-def test_iter_filepaths():
-    root = _mk_test_project()
-    iterfp = lambda *a, **k: list(ob.iter_filepaths(*a, **k))
-
-    assert len(iterfp(root)) == 10
-    assert len(iterfp(root, "*.js")) == 4
-    assert iterfp(root, "*.jpg")[0].endswith("baz.jpg")
-    assert len(iterfp(root, file_exclude="*.js")) == 6
-    assert len(iterfp(root, dir_filter="*subdir_a")) == 4
-    assert len(iterfp(root, dir_filter="*subdir_a", file_filter="*.py")) == 2
-
-
-def test_multi_iter_filepaths():
-    root = _mk_test_project()
-    dirs = [os.path.join(root, "subdir_a"), os.path.join(root, "subdir_b")]
-    assert len(list(ob.multi_iter_filepaths(dirs))) == 6
-
-
 def test_filter_longest():
     elems = ["abcdefghij", "aabbccddeeffgghhii", "aabbccddeeeef"]
 
@@ -330,6 +312,13 @@ def test_updated_fullref():
     assert rewritten == "url('/static/app.js?_cb_=abcdef&a=b')"
     rewritten = ob.updated_fullref(fn_ref, "abcdef", ob.FN_REF)
     assert rewritten == "url('/static/app_cb_abcdef.js?foo=12&bar=34')"
+    nodir_ref = ob.Ref("static", "test.html", 123,
+                       "url('logo.png?_cb_=123456&a=b')",
+                       "logo.png", "123456", ob.QS_REF)
+    rewritten = ob.updated_fullref(nodir_ref, "abcdef")
+    assert rewritten == "url('logo.png?_cb_=abcdef&a=b')"
+    rewritten = ob.updated_fullref(nodir_ref, "abcdef", ob.FN_REF)
+    assert rewritten == "url('logo_cb_abcdef.png?a=b')"
 
 
 def test_plainref_line_parser():
@@ -405,6 +394,88 @@ def test_parse_content_refs():
     assert "xyz" in busts
 
 
+def test_iter_refs():
+    pass # TODO
+
+
+def test_iter_filepaths():
+    root = _mk_test_project()
+    iterfp = lambda *a, **k: list(ob.iter_filepaths(*a, **k))
+
+    assert len(iterfp(root)) == 10
+    assert len(iterfp(root, "*.js")) == 4
+    assert iterfp(root, "*.jpg")[0].endswith("baz.jpg")
+    assert len(iterfp(root, file_exclude="*.js")) == 6
+    assert len(iterfp(root, dir_filter="*subdir_a")) == 4
+    assert len(iterfp(root, dir_filter="*subdir_a", file_filter="*.py")) == 2
+
+
+def test_multi_iter_filepaths():
+    root = _mk_test_project()
+    dirs = [os.path.join(root, "subdir_a"), os.path.join(root, "subdir_b")]
+    assert len(list(ob.multi_iter_filepaths(dirs))) == 6
+
+
+def test_init_project_paths():
+    pass # TODO
+
+
+def test_cfg_project_paths():
+    pass # TODO
+
+
+def test_ref_print_wrapper():
+    refs = [
+        (ob.Ref("foo/static", "test.html", 123,
+                "url('/static/app.js')",
+                "/static/app.js", "", ob.PLAIN_REF),
+         ("foo/static/app.js",),
+         "url('/static/app.js?_cb_=test')",
+        )
+    ]
+    orig_out = sys.stdout
+    tmp_out = sys.stdout = StringIO()
+
+    assert list(ob.ref_print_wrapper(refs)) == refs
+
+    sys.stdout = orig_out
+    lines = tmp_out.getvalue().splitlines()
+
+    assert len(lines) == 3
+    assert lines[0] == "foo/static/test.html"
+    assert lines[1].endswith("url('/static/app.js')")
+    assert "_cb_=test" not in lines[1]
+    assert "_cb_=test" in lines[2]
+
+
+def test_rewrite_content():
+    pass # TODO
+
+
+def test_scan_project():
+    pass # TODO
+
+
+def test_read_cfg():
+    cfg = ob.read_cfg(['--no-init'])
+
+    assert isinstance(cfg['static_dirs'], list)
+    assert isinstance(cfg['code_dirs'], list)
+    assert isinstance(cfg['static_fileglobs'], list)
+    assert isinstance(cfg['code_fileglobs'], list)
+    assert isinstance(cfg['bust_length'], int)
+    assert isinstance(cfg['stat_length'], int)
+    assert isinstance(cfg['digest_length'], int)
+
+
+def test_dumplist():
+    assert ob.dumpslist(["foo", "bar", "baz"]) == """[
+        "foo", 
+        "bar", 
+        "baz"
+    ]"""
+
+
 def test_strip_comments():
     stripped = ob.strip_comments("""
         http://foo.com/bar    // a comment
@@ -421,6 +492,26 @@ def test_get_flag():
     assert ob.get_flag(args, '--foo')
     assert not ob.get_flag(args, '--test')
     assert not ob.get_flag([], '--foo')
+
+
+def test_get_command():
+    assert ob.get_command(["init"]) == "init"
+    try:
+        ob.get_command([])
+        assert False, "expected BaseError because of missing command"
+    except ob.BaseError:
+        pass
+    try:
+        ob.get_command(["foo"])
+        assert False, "expected BaseError because of invalid command"
+    except ob.BaseError:
+        pass
+
+
+def test_get_target_reftype():
+    assert ob.get_target_reftype(["update", "--filename"]) == ob.FN_REF
+    assert ob.get_target_reftype(["update", "--querystring"]) == ob.QS_REF
+    assert ob.get_target_reftype(["update"]) is None
 
 
 def test_get_opt():

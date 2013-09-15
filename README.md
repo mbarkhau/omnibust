@@ -31,10 +31,10 @@ Usage
 Project setup:
 
     $ cd your/project/directory
-    $ omninust . --init
+    $ omninust init
 
-This will show all static urls and the static files associated with
-them and write `omnibust.cfg`.
+This will write the `.omnibust` file, which you can take a look at and
+update if some of your urls are not being found.
 
 If this doesn't find all references to static files, or doesn't find
 the static files themselves, you will have to adjust `static_dirs` and
@@ -43,20 +43,20 @@ opening a ticket on [https://bitbucket.org/mbarkhau/omnibust], as
 omnibust should work out of the box for as many projects as reasonably
 possible.
 
-The `--rewrite` option will add a `_cb_` to every static url it can
+The `rewrite` option will add a `_cb_` to every static url it can
 find and associate with a static file in the project directory.
 
-CAUTION: Since `--rewrite` will modify your source files, you should
+CAUTION: Since `rewrite` will modify your source files, you should
 commit or backup your files and run omnibust with `--no-act` first to
 make certain it won't modify anything in the wrong way.
 
-    $ omnibust . --rewrite --no-act
-    $ omnibust . --rewrite
+    $ omnibust status --querystring
+    $ omnibust rewrite --querystring
 
-From now on you simply run omnibust on your project director and it
-will only update urls which already contain a `_cb_` parameter.
+From now on you simply run omnibust rewrite on your project directory and it
+will only update urls with an existing `_cb_` parameter.
 
-    $ omnibust .
+    $ omnibust rewrite
 
 
 Options and Configuration
@@ -145,14 +145,16 @@ parameter, and serving the correct static resource. Here are some
 configuration directives for common webservers.
 
 
-Apache
-------
-
 Nginx
 -----
 
-Django
+	location ~* ^/static/(.+?)_cb_\w+(\.\w+)$ {
+	    alias /srv/www/static/$1$2;
+	    add_header Vary Accept-Encoding;
+	    expires max;
+	}
+ 
+
+Apache
 ------
 
-Flask
------

@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 """Omnibust v0.1.0 - A universal cachebusting script
 
-Omnibust will scan your project files for static resources files
+Omnibust will scan the files of your web project for static resources
 (js, css, png) and also for urls which reference these resources in your
-sourcecode (html, js, css, py, rb, etc.). It will rewrite any urls to
-successfully matched static resource with a cachebust parameter.
+sourcecode (html, js, css, py, rb, etc.). It will add or update a
+cachebust parameter on any such urls which is based on the static
+resources they reference.
 
 First steps:
-
     omnibust init                       # scan and write omnibust.cfg
     omnibust status                     # view updated urls
-    omnibust rewrite                    # add or update cachebust parameters
+    omnibust rewrite                    # add or update cachebust params
 
 Usage:
     omnibust (--help|--version)
@@ -25,13 +25,14 @@ Options:
     --version           Display version number
 
     -n --no-init        Use default configuration to scan for and update
-                            existing '_cb_' cachebust parameters (may be slow).
-    --querystring       Rewrites all references so the querystring contains a
-                            cachebust parameter.
-    --filename          Rewrites all references so the filename contains a
-                            cachebust parameter rather than the querystring.
+                            existing '_cb_' cachebust parameters.
+    --querystring       Rewrites all references so the querystring
+                            contains a cachebust parameter.
+    --filename          Rewrites all references so the filename
+                            contains a cachebust parameter.
 """
 from __future__ import print_function
+import time
 import base64
 import codecs
 import collections
@@ -328,16 +329,20 @@ def mk_plainref(ref):
     if ref.type == FN_REF:
         return ref.full_ref.replace("_cb_" + ref.bustcode, "")
     if ref.type == QS_REF:
-        return (ref.full_ref
-                .replace("?_cb_=" + ref.bustcode, "?")
-                .replace("&_cb_=" + ref.bustcode, "")
-                .replace("?&", "?"))
+        return (ref.full_ref.replace("?_cb_=" + ref.bustcode, "?")
+                            .replace("&_cb_=" + ref.bustcode, "")
+                            .replace("?&", "?")
+                            .replace("?)", ")")
+                            .replace("?')", "')")
+                            .replace('?")', '")')
+                            .replace('?"', '"')
+                            .replace("?'", "'"))
 
 
 def set_fn_bustcode(ref, new_bustcode):
-    rdir, rfn = os.path.split(ref.path)
-    basename, ext = os.path.splitext(rfn)
-    fnref = rdir + "/" + basename + "_cb_" + new_bustcode + ext
+    _, ext = os.path.splitext(ref.path)
+    basename = ref.path[:-len(ext)]
+    fnref = basename + "_cb_" + new_bustcode + ext
     return mk_plainref(ref).replace(ref.path, fnref)
 
 
@@ -362,8 +367,9 @@ def updated_fullref(ref, new_bustcode, target_reftype=None):
         target_reftype = ref.type
 
     assert target_reftype in (PLAIN_REF, FN_REF, QS_REF)
+
     if ref.bustcode == new_bustcode and ref.type == target_reftype:
-        return
+        return ref.full_ref
 
     if ref.type == target_reftype:
         return replace_bustcode(ref, new_bustcode)
@@ -374,7 +380,6 @@ def updated_fullref(ref, new_bustcode, target_reftype=None):
         return set_fn_bustcode(ref, new_bustcode)
     if target_reftype == QS_REF:
         return set_qs_bustcode(ref, new_bustcode)
-
 
 # codefile parsing
 
@@ -496,124 +501,7 @@ def cfg_project_paths(cfg):
     return code_filepaths, static_filepaths
 
 
-# def resolve_refpath(codepath, path, static_paths):
-#     """Find the best matching path for an url"""
-#     longest_spath = ""
-#     longest_path = None
-# 
-#     subpaths = ref.split("/")
-#     for path in static_paths:
-#         if not path.endswith(subpaths[-1]):
-#             continue
-# 
-#         for i in range(1, len(subpaths) + 1):
-#             spath = os.path.sep.join(subpaths[-i:])
-#             if spath in path:
-#                 if len(spath) > len(longest_spath):
-#                     longest_spath = spath
-#                     longest_path = path
-#             else:
-#                 break
-# 
-#     return longest_path
-# 
-# 
-# def resolve_references(refs, paths):
-#     for ref in refs:
-#         ref = ref.replace("/", os.sep)
-#         # path = resolve_filepath(ref, paths)
-#         # if path:
-#         #     yield path
-# 
-# 
-# def resolve_reference_paths(cfg, ref, paths):
-#     refs = expand_ref(ref, cfg['multibust'])
-#     return resolve_references(refs)
-
-# def update_ref(content, full_ref, ref, old_bust, new_bust,
-#                old_reftype, new_reftype):
-#     if old_reftype == new_reftype:
-#         new_full_ref = full_ref.replace(old_bust, new_bust)
-#     else:
-#         # TODO: extend regular expression to capture all query parameters
-#         #       parse query params from full_ref
-#         #       reconstruct new query params
-#         raise NotImplemented("changing ref types")
-#     return content.replace(full_ref, new_full_ref)
-
-# def update_references(args, cfg, filepath, static_paths):
-#     arg_verbose = '-v' in args or '--verbose' in args
-#     arg_quiet = '-q' in args or '--quiet' in args
-#     arg_force = '-f' in args or '--force' in args
-
-#     force_fn = '--filename' in args
-#     force_qs = '--queryparam' in args
-
-#     tgt_reftype = None
-#     if force_fn and not force_qs:
-#         tgt_reftype = FN_REF
-#     if force_qs and not force_fn:
-#         tgt_reftype = QS_REF
-
-#     hash_fun = cfg['hash_function']
-#     hash_length = int(cfg['hash_length'])
-#     stat_len = min(4, hash_length // 2)
-#     hash_len = hash_length - stat_len
-
-#     file_enc = cfg['file_encoding']
-
-#     with codecs.open(filepath, 'r', encoding=file_enc) as f:
-#         orig_content = f.read()
-
-#     content = orig_content
-
-#     references = parse_marked_refs(orig_content)
-#     for lineno, full_ref, fn_ref, old_bust, old_reftype in references:
-#         if arg_verbose:
-#             fmtstr = '{1}, line {2:<4}: {0}'
-#             print(fmtstr.format(full_ref, filepath, lineno))
-
-#         new_reftype = tgt_reftype or old_reftype
-#         paths = tuple(resolve_reference_paths(cfg, fn_ref, static_paths))
-
-#         if len(paths) == 0:
-#             if not arg_quiet:
-#                 print(u"missing! : " + full_ref)
-#             continue
-
-#         needs_change = old_reftype != new_reftype or arg_force
-
-#         new_stat = digest_paths(paths, filestat)[:stat_len]
-
-#         if not needs_change and old_bust.startswith(new_stat):
-#             if arg_verbose:
-#                 print(u"unchanged: " + full_ref)
-#             continue
-
-#         new_hash = digest_paths(paths, mk_buster(hash_fun))[:hash_len]
-
-#         if not needs_change and old_bust.endswith(new_hash):
-#             continue
-
-#         new_bust = new_stat + new_hash
-
-#         if not arg_quiet:
-#             print(u"busted   : {0} -> {1}".format(full_ref, new_bust))
-
-#         content = update_ref(content, full_ref, fn_ref, old_bust, new_bust,
-#                              old_reftype, new_reftype)
-
-#     if content == orig_content:
-#         return
-
-#     if arg_verbose:
-#         print(u"rewriting:", filepath)
-
-#     with codecs.open(filepath, 'w', encoding=file_enc) as f:
-#         f.write(content)
-
-
-def ref_printer(refs):
+def ref_print_wrapper(refs):
     prev_codepath = None
     for ref, paths, new_full_ref  in refs:
         codepath = os.path.join(ref.code_dir, ref.code_fn)
@@ -636,11 +524,10 @@ def busted_refs(ref_map, cfg, target_reftype):
 
     for ref, paths in ref_map.items():
         new_bustcode = buster(paths)
-        if ref.bustcode == new_bustcode:
+        if ref.bustcode == new_bustcode and (target_reftype is None or
+                                             ref.type == target_reftype):
             continue
-        print(ref.type, ref.bustcode, new_bustcode)
-        new_fullref = updated_fullref(ref, new_bustcode, target_reftype)
-        yield ref, paths, new_fullref
+        yield ref, paths, updated_fullref(ref, new_bustcode, target_reftype)
 
 
 def rewrite_content(ref, new_full_ref):
@@ -651,7 +538,7 @@ def rewrite_content(ref, new_full_ref):
         f.write(content.replace(ref.full_ref, new_full_ref))
 
 
-def scan_project(codefile_paths, static_filepaths, multibust=None,
+def _scan_project(codefile_paths, static_filepaths, multibust=None,
                  parse_plain=True, encoding='utf-8'):
     refs = collections.OrderedDict()
 
@@ -668,48 +555,11 @@ def scan_project(codefile_paths, static_filepaths, multibust=None,
     return refs
 
 
-def init_project(args):
-    if os.path.exists(".omnibust"):
-        raise PathError(u"config already exists", ".omnibust")
-
-    ref_map = scan_project(*init_project_paths())
-
-    static_dirs = set(os.path.split(p)[0] for p in flatten(ref_map.values()))
-    code_dirs = set(r.code_dir for r in ref_map)
-    static_extensions = extension_globs(flatten(ref_map.values()))
-    code_extensions = extension_globs((r.code_fn for r in ref_map))
-    
-    with codecs.open(".omnibust", 'w', 'utf-8') as f:
-        f.write(INIT_CFG % (
-            dumpslist(list(static_dirs)),
-            dumpslist(static_extensions),
-            dumpslist(list(code_dirs)),
-            dumpslist(code_extensions)
-        ))
-
-    print(u"omnibust: wrote {0}".format(".omnibust"))
-
-
-def status(args, cfg):
+def scan_project(args, cfg):
     target_reftype = get_target_reftype(args)
-
-    ref_map = scan_project(*cfg_project_paths(cfg), multibust=cfg['multibust'],
-                           parse_plain=target_reftype is not None,
-                           encoding=cfg['file_encoding'])
-
-    list(ref_printer(busted_refs(ref_map, cfg, target_reftype)))
-
-
-def rewrite(args, cfg):
-    target_reftype = get_target_reftype(args)
-    ref_map = scan_project(*cfg_project_paths(cfg), multibust=cfg['multibust'],
-                           parse_plain=target_reftype is not None,
-                           encoding=cfg['file_encoding'])
-
-    refs = ref_printer(busted_refs(ref_map, cfg, target_reftype))
-    for ref, _, new_full_ref in refs:
-        rewrite_content(ref, new_full_ref)
-
+    return _scan_project(*cfg_project_paths(cfg), multibust=cfg['multibust'],
+                        parse_plain=target_reftype is not None,
+                        encoding=cfg['file_encoding'])
 
 # configuration
 
@@ -717,7 +567,7 @@ def read_cfg(args):
     cfg = json.loads(strip_comments(DEFAULT_CFG))
 
     if not get_flag(args, '--no-init') and not os.path.exists(".omnibust"):
-        raise PathError(u"try 'omnibust init'", ".omnibust")
+        raise PathError("try 'omnibust init'", ".omnibust")
         return None
 
     if not get_flag(args, '--no-init'):
@@ -725,7 +575,7 @@ def read_cfg(args):
             with codecs.open(".omnibust", 'r', encoding='utf-8') as f:
                 cfg.update(json.loads(strip_comments(f.read())))
         except (ValueError, IOError) as e:
-            raise BaseError(u"Error parsing '%s', %s" % (".omnibust", e))
+            raise BaseError("Error parsing '%s', %s" % (".omnibust", e))
     
     if 'stat_length' not in cfg:
         cfg['stat_length'] = cfg['bust_length'] // 2
@@ -815,7 +665,6 @@ INIT_CFG = r"""{
 }
 """
 
-
 # option parsing
 
 VALID_ARGS = set([
@@ -828,29 +677,24 @@ VALID_ARGS = set([
 ])
 
 
-def valid_args(args):
+def validate_args(args):
     if len(args) == 0:
         return False
+
+    if '--filename' in args and '--querystring' in args:
+        raise BaseError("Invalid invocation, only one of "
+                        "'--filename' and '--querystring' is permitted")
 
     args = iter(args)
     cmd = next(args)
     if cmd not in ("init", "status", "rewrite"):
-        print("omnibust: invalid command '%s'" % cmd)
-        return False
-
-    if '--filename' in args and '--querystring' in args:
-        print("omnibust: invalid invocation, "
-              "only one of '--filename' and '--querystring' is permitted")
-        return False
-
+        raise BaseError("Invalid command '%s' " % cmd)
+        
     for arg in args:
         if arg in VALID_ARGS:
             continue
 
-        print("omnibust: invalid argument '%s' " % arg)
-        return False
-
-    return True
+        raise BaseError("Invalid argument '%s' " % arg)
 
 
 def get_flag(args, flag):
@@ -858,7 +702,14 @@ def get_flag(args, flag):
 
 
 def get_command(args):
-    return args[0]
+    if len(args) == 0:
+        raise BaseError("Expected command (init|status|rewrite)")
+
+    cmd = args[0]
+    if cmd not in ("init", "status", "rewrite"):
+        raise BaseError("Expected command (init|status|rewrite)")
+
+    return cmd
 
 
 def get_target_reftype(args):
@@ -893,47 +744,92 @@ def get_opt(args, opt, default='__sentinel__'):
 # top level program
 
 
+def init_project(args):
+    if os.path.exists(".omnibust"):
+        raise PathError("Config already exists", ".omnibust")
+
+    ref_map = _scan_project(*init_project_paths())
+
+    static_dirs = set(os.path.split(p)[0] for p in flatten(ref_map.values()))
+    code_dirs = set(r.code_dir for r in ref_map)
+    static_extensions = extension_globs(flatten(ref_map.values()))
+    code_extensions = extension_globs((r.code_fn for r in ref_map))
+    
+    with codecs.open(".omnibust", 'w', 'utf-8') as f:
+        f.write(INIT_CFG % (
+            dumpslist(list(static_dirs)),
+            dumpslist(static_extensions),
+            dumpslist(list(code_dirs)),
+            dumpslist(code_extensions)
+        ))
+
+    print("omnibust: wrote {0}".format(".omnibust"))
+
+
+def status(args, cfg):
+    target_reftype = get_target_reftype(args)
+    ref_map = scan_project(args, cfg)
+    list(ref_print_wrapper(busted_refs(ref_map, cfg, target_reftype)))
+
+
+def rewrite(args, cfg):
+    target_reftype = get_target_reftype(args)
+    
+    # the loop is to deal with cascades
+    # it continues until all paths have been busted at least once
+    updated_paths = set()
+    while True:
+        ref_map = scan_project(args, cfg)
+        time.sleep(0.02)    # wait just a bit so that any rewrite will result
+                            # in a different timestamp on the next iteration
+        cur_paths = set()
+        refs = ref_print_wrapper(busted_refs(ref_map, cfg, target_reftype))
+        for ref, paths, new_full_ref in refs:
+            rewrite_content(ref, new_full_ref)
+            cur_paths.update(paths)
+
+        if len(cur_paths - updated_paths) == 0:
+            break
+
+        updated_paths.update(cur_paths)
+
+
 def dispatch(args):
-    if get_command(args) == 'init':
+    cmd = get_command(args)
+    if cmd  == 'init':
         return init_project(args)
-
-    cfg = read_cfg(args)
-
-    if get_command(args) == 'status':
-        return status(args, cfg)
-
-    if get_command(args) == 'rewrite':
-        return rewrite(args, cfg)
-
-    print("omnibust: valid commands (init|status|rewrite)")
-    return 1
+    if cmd == 'status':
+        return status(args, read_cfg(args))
+    if cmd == 'rewrite':
+        return rewrite(args, read_cfg(args))
 
 
 def main(args=sys.argv[1:]):
     """Print help/version info if requested, otherwise do the do run run. """
-    if not valid_args(args):
+    if len(args) == 0:
         usage = __doc__.split("Options:")[0].strip().split("Usage:")[1]
         print("\nUsage:" + usage)
         return
 
-    if u"--version" in args:
+    if "--version" in args:
         print(__doc__.split(" -")[0])
         return
 
-    if get_flag(args, u"--help"):
+    if get_flag(args, "--help"):
         print(__doc__)
         return
 
     try:
+        validate_args(args)
         return dispatch(args)
     except PathError as e:
-        print(u"omnibust: path error '%s': %s" % (e.path, e.message))
+        print("omnibust: path error '%s': %s" % (e.path, e.message))
         return 1
     except BaseError as e:
-        print(u"omnibust: " + e.message)
+        print("omnibust: " + e.message)
         return 1
     except Exception as e:
-        print(u"omnibust: " + unicode(e))
+        print("omnibust: " + unicode(e))
         raise
 
 
