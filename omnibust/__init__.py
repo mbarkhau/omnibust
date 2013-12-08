@@ -531,10 +531,11 @@ def busted_refs(ref_map, cfg, target_reftype):
 
 
 def rewrite_content(ref, new_full_ref):
-    with open(ref_codepath(ref), 'r') as f:
+    # TODO: better handling of file encoding
+    with codecs.open(ref_codepath(ref), 'r', encoding='utf-8') as f:
         content = f.read()
 
-    with open(ref_codepath(ref), 'w') as f:
+    with codecs.open(ref_codepath(ref), 'w', encoding='utf-8') as f:
         f.write(content.replace(ref.full_ref, new_full_ref))
 
 
