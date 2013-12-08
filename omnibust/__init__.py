@@ -442,8 +442,8 @@ def iter_refs(codefile_paths, parse_plain=True, encoding='utf-8'):
         try:
             with codecs.open(codefile_path, 'r', encoding) as fp:
                 content = fp.read()
-        except:
-            print("omnibust: error reading '%s'" % codefile_path)
+        except Exception as e:
+            print("omnibust: error reading '{0}' ('{1}')".format(codefile_path, e))
             continue
         
         for ref in parse_content_refs(content, parse_plain):
@@ -513,9 +513,6 @@ def ref_print_wrapper(refs):
         print(" %s %s" % (lineno, ref.full_ref))
         print("    ->", new_full_ref)
         yield ref, paths, new_full_ref
-    
-    if prev_codepath is None:
-        print("omnibust: nothing to cachebust")
 
 
 def busted_refs(ref_map, cfg, target_reftype):
@@ -770,7 +767,10 @@ def init_project(args):
 def status(args, cfg):
     target_reftype = get_target_reftype(args)
     ref_map = scan_project(args, cfg)
-    list(ref_print_wrapper(busted_refs(ref_map, cfg, target_reftype)))
+    refs = list(ref_print_wrapper(busted_refs(ref_map, cfg, target_reftype)))
+    if not refs:
+        print("omnibust: nothing to cachebust")
+
 
 
 def rewrite(args, cfg):
@@ -793,6 +793,9 @@ def rewrite(args, cfg):
             break
 
         updated_paths.update(cur_paths)
+
+    if not updated_paths:
+        print("omnibust: nothing to cachebust")
 
 
 def dispatch(args):
