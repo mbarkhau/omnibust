@@ -3,7 +3,7 @@
 A language and framework agnostic cachbusting script.
 
 Omnibust will scan the files of your web project for static resources
-(js, css, png) and also for urls in your sourcecode (html, js, css, py,
+(js, css, png) and also for urls in your source code (html, js, css, py,
 rb, etc.) which reference these resources. It will add or update a
 cachebust parameter on any such urls based on the static resources they
 reference.
@@ -22,6 +22,7 @@ Or
     $ chmod +x omnibust.py
     $ cp omnibust.py /usr/local/bin/omnibust
 
+
 Check that it worked
     
     $ omnibust --help
@@ -35,11 +36,12 @@ Project setup:
     $ omninust init
 
 This will write the `.omnibust` file, which you can take a look at and
-update if some of your urls are not being found.
+update if some of your urls are not being found or scanning your project
+files is taking too long.
 
 If this doesn't find all references to static files, or doesn't find
 the static files themselves, you will have to adjust `static_dirs` and
-`code_dirs` in your `omnibust.cfg` (see below). Please also consider
+`code_dirs` in your `.omnibust` file (see below). Please also consider
 opening a ticket on [https://bitbucket.org/mbarkhau/omnibust], as 
 omnibust should work out of the box for as many projects as reasonably
 possible.
@@ -48,8 +50,8 @@ The `rewrite` option will add a `_cb_` to every static url it can
 find and associate with a static file in the project directory.
 
 CAUTION: Since `rewrite` will modify your source files, you should
-commit or backup your files and run omnibust with `--no-act` first to
-make certain it won't modify anything in the wrong way.
+commit or backup your files and run `omnibust status` first to make
+certain it won't modify anything it shouldn't.
 
     $ omnibust status --querystring
     $ omnibust rewrite --querystring
